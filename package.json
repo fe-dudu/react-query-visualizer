@@ -1,6 +1,6 @@
 {
   "name": "react-query-visualizer",
-  "version": "0.0.1",
+  "version": "0.0.2",
   "description": "Interactive VS Code graph for React Query flows: trace query declarations, cache actions, and impacted files",
   "homepage": "https://github.com/fe-dudu/react-query-visualizer#readme",
   "bugs": {
