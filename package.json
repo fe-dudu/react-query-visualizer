@@ -1,6 +1,6 @@
 {
   "name": "react-query-visualizer",
-  "version": "0.0.2",
+  "version": "0.0.3",
   "description": "VS Code extension for TanStack Query (React Query): visualize query keys, cache invalidation/refetch flows, and file impact graph",
   "homepage": "https://github.com/fe-dudu/react-query-visualizer#readme",
   "bugs": {
