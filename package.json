@@ -1,7 +1,7 @@
 {
   "name": "react-query-visualizer",
   "version": "0.0.2",
-  "description": "Interactive VS Code graph for React Query flows: trace query declarations, cache actions, and impacted files",
+  "description": "VS Code extension for TanStack Query (React Query): visualize query keys, cache invalidation/refetch flows, and file impact graph",
   "homepage": "https://github.com/fe-dudu/react-query-visualizer#readme",
   "bugs": {
     "url": "https://github.com/fe-dudu/react-query-visualizer/issues"
@@ -24,10 +24,12 @@
     "clean": "node -e \"require('node:fs').rmSync('dist', { recursive: true, force: true })\"",
     "format": "biome check --write --unsafe",
     "lint": "biome lint .",
-    "package:vsix": "pnpm run build && pnpm exec vsce package --no-dependencies --allow-missing-repository",
+    "package:vsix": "pnpm run build && pnpm exec vsce package --no-dependencies",
     "postinstall": "packlint sort -R && pnpm format",
     "prepare": "husky",
-    "release:vsce": "pnpm run build && pnpm exec vsce publish --no-dependencies --allow-missing-repository --skip-duplicate",
+    "release:marketplaces": "pnpm run build && pnpm run release:vsce && pnpm run release:ovsx",
+    "release:ovsx": "pnpm dlx ovsx publish --no-dependencies --skip-duplicate",
+    "release:vsce": "pnpm exec vsce publish --no-dependencies --skip-duplicate",
     "type-check": "tsc --noEmit",
     "version:changeset": "changeset version",
     "watch:webview": "pnpm run build:webview:bundle -- --watch"
@@ -216,6 +218,9 @@
     }
   },
   "displayName": "React Query Visualizer",
+  "extensionKind": [
+    "workspace"
+  ],
   "icon": "media/icon.png",
   "publisher": "fe-dudu"
 }

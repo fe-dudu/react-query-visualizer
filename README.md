@@ -1,6 +1,8 @@
 # React Query Visualizer
 
-Visualize React Query state flow in VS Code using static source analysis.
+React Query Visualizer is a VS Code extension for TanStack Query (React Query) that helps you debug query keys, cache invalidation/refetch flows, and impacted files with static source analysis.
+
+Useful for searches like React Query visualizer, TanStack Query debugger, React Query dependency graph, invalidateQueries tracker, and React Query VS Code extension.
 
 [![VS Marketplace](https://img.shields.io/vscode-marketplace/v/fe-dudu.react-query-visualizer?label=VS%20Marketplace)](https://marketplace.visualstudio.com/items?itemName=fe-dudu.react-query-visualizer)
 [![Open VSX](https://img.shields.io/open-vsx/v/fe-dudu/react-query-visualizer)](https://open-vsx.org/extension/fe-dudu/react-query-visualizer)
@@ -9,6 +11,8 @@ Visualize React Query state flow in VS Code using static source analysis.
 ## Open Source
 
 This project is open source: [https://github.com/fe-dudu/react-query-visualizer](https://github.com/fe-dudu/react-query-visualizer)
+
+If this extension saves you debugging time, please [Star ⭐ this repo on GitHub](https://github.com/fe-dudu/react-query-visualizer)
 
 If this tool helps you, please star the repository and contribute improvements through issues and pull requests.
 
@@ -142,18 +146,20 @@ pnpm run package:vsix
 
 ## Release Automation
 
-VS Code Marketplace publish is automated with GitHub Actions:
+Extension publish is automated with GitHub Actions for both marketplaces:
 
 - Workflow file: `.github/workflows/publish-vscode-extension.yml`
 - Trigger: push to `main` or manual run (`workflow_dispatch`)
 - Release strategy: Changesets (`.changeset/*`)
-- Secret: `AZURE_ACCESS_TOKEN` (used as `VSCE_PAT`)
+- Secrets:
+  - `AZURE_ACCESS_TOKEN` (used as `VSCE_PAT` for VS Code Marketplace)
+  - `OVSX_ACCESS_TOKEN` (used as `OVSX_PAT` for Open VSX)
 
 Typical release flow:
 
 1. Add a changeset in your feature PR (`pnpm changeset`)
 2. Merge PR to `main` (workflow creates/updates a version PR)
-3. Merge version PR (workflow publishes to VS Code Marketplace)
+3. Merge version PR (workflow publishes to VS Code Marketplace and Open VSX)
 
 ## Contributing
 

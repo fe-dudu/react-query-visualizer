@@ -1,4 +1,4 @@
-name: Release VS Code Extension
+name: Release Extension Marketplaces
 
 on:
   push:
@@ -11,7 +11,7 @@ permissions:
   pull-requests: write
 
 concurrency:
-  group: release-vscode-extension
+  group: release-extension-marketplaces
   cancel-in-progress: false
 
 jobs:
@@ -31,9 +31,10 @@ jobs:
         uses: changesets/action@v1
         with:
           version: pnpm changeset version
-          publish: pnpm run release:vsce
+          publish: pnpm run release:marketplaces
           commit: 'chore: version packages'
           title: 'chore: version packages'
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           VSCE_PAT: ${{ secrets.AZURE_ACCESS_TOKEN }}
+          OVSX_PAT: ${{ secrets.OVSX_ACCESS_TOKEN }}
