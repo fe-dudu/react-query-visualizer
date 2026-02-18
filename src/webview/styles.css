@@ -1,0 +1,108 @@
+@import "@xyflow/react/dist/style.css";
+@import "tailwindcss";
+@custom-variant dark (&:where(.dark, .dark *));
+
+:root {
+  color-scheme: light;
+  --rqv-grid-color: rgba(113, 113, 122, 0.12);
+  --rqv-controls-border: #a1a1aa;
+  --rqv-controls-bg: rgba(244, 244, 245, 0.94);
+  --rqv-controls-shadow: rgba(15, 23, 42, 0.18);
+  --rqv-controls-button-bg: rgba(228, 228, 231, 0.96);
+  --rqv-controls-button-border: #d4d4d8;
+  --rqv-controls-button-fg: #27272a;
+  --rqv-controls-button-hover-bg: #d4d4d8;
+  --rqv-controls-button-hover-fg: #09090b;
+  --rqv-minimap-node: #52525b;
+  --rqv-minimap-mask: rgba(161, 161, 170, 0.22);
+  --rqv-minimap-bg: rgba(250, 250, 250, 0.94);
+  --rqv-minimap-border: rgba(161, 161, 170, 0.45);
+  --rqv-minimap-shadow: rgba(24, 24, 27, 0.14);
+}
+
+:root.dark {
+  color-scheme: dark;
+  --rqv-grid-color: rgba(212, 212, 216, 0.08);
+  --rqv-controls-border: #52525b;
+  --rqv-controls-bg: rgba(24, 24, 27, 0.92);
+  --rqv-controls-shadow: rgba(0, 0, 0, 0.55);
+  --rqv-controls-button-bg: rgba(39, 39, 42, 0.96);
+  --rqv-controls-button-border: #3f3f46;
+  --rqv-controls-button-fg: #e4e4e7;
+  --rqv-controls-button-hover-bg: #52525b;
+  --rqv-controls-button-hover-fg: #fafafa;
+  --rqv-minimap-node: #a1a1aa;
+  --rqv-minimap-mask: rgba(24, 24, 27, 0.46);
+  --rqv-minimap-bg: rgba(24, 24, 27, 0.78);
+  --rqv-minimap-border: rgba(161, 161, 170, 0.55);
+  --rqv-minimap-shadow: rgba(24, 24, 27, 0.4);
+}
+
+html,
+body,
+#root {
+  width: 100%;
+  height: 100%;
+  margin: 0;
+  padding: 0;
+}
+
+.react-flow__attribution {
+  display: none;
+}
+
+.react-flow__controls {
+  border: 1px solid var(--rqv-controls-border);
+  border-radius: 12px;
+  overflow: hidden;
+  background: var(--rqv-controls-bg);
+  box-shadow: 0 10px 22px var(--rqv-controls-shadow);
+}
+
+.react-flow__controls-button {
+  width: 38px;
+  height: 38px;
+  border: 0;
+  border-bottom: 1px solid var(--rqv-controls-button-border);
+  background: var(--rqv-controls-button-bg);
+  color: var(--rqv-controls-button-fg);
+  transition:
+    background-color 120ms ease,
+    color 120ms ease;
+}
+
+.react-flow__controls-button:last-child {
+  border-bottom: 0;
+}
+
+.react-flow__controls-button:hover {
+  background: var(--rqv-controls-button-hover-bg);
+  color: var(--rqv-controls-button-hover-fg);
+}
+
+.react-flow__controls-button svg {
+  fill: currentColor;
+  stroke: currentColor;
+}
+
+@keyframes rqv-edge-flow-dash {
+  from {
+    stroke-dashoffset: 0;
+  }
+  to {
+    stroke-dashoffset: -92;
+  }
+}
+
+.rqv-edge-flow,
+.rqv-edge-flow .react-flow__edge-path {
+  animation: rqv-edge-flow-dash 1.35s linear infinite;
+  will-change: stroke-dashoffset;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .rqv-edge-flow,
+  .rqv-edge-flow .react-flow__edge-path {
+    animation: none;
+  }
+}
