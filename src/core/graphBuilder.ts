@@ -20,8 +20,8 @@ function makeActionNodeId(record: QueryRecord, index: number): string {
   return `action:${record.file}:${record.loc.line}:${record.loc.column}:${record.operation}:${index}`;
 }
 
-function makeQueryKeyNodeId(queryKeyId: string): string {
-  return `qk:${queryKeyId}`;
+function makeQueryKeyNodeId(projectScope: string, queryKeyId: string): string {
+  return `qk:${projectScope}:${queryKeyId}`;
 }
 
 function findBestRoot(roots: GraphRoot[], filePath: string): GraphRoot | undefined {
@@ -198,10 +198,6 @@ function isDynamicSegment(segment: string): boolean {
     return true;
   }
 
-  if (normalized.includes('${')) {
-    return true;
-  }
-
   if (normalized.includes('UNRESOLVED')) {
     return true;
   }
@@ -213,25 +209,48 @@ function isDynamicSegment(segment: string): boolean {
   return false;
 }
 
-function segmentsCompatible(left: string, right: string): boolean {
-  if (left === right) {
+function isPlaceholderSegment(segment: string): boolean {
+  const normalized = segment.trim();
+  return normalized.startsWith('$') || normalized === 'UNRESOLVED';
+}
+
+function isTemplateDynamicSegment(segment: string): boolean {
+  return segment.includes('${');
+}
+
+function actionSegmentMatchesDeclaredSegment(actionSegment: string, declaredSegment: string): boolean {
+  if (actionSegment === declaredSegment) {
     return true;
   }
 
-  if (isDynamicSegment(left) || isDynamicSegment(right)) {
+  const actionIsTemplate = isTemplateDynamicSegment(actionSegment);
+  const declaredIsTemplate = isTemplateDynamicSegment(declaredSegment);
+  if (actionIsTemplate || declaredIsTemplate) {
+    return false;
+  }
+
+  if (isPlaceholderSegment(actionSegment)) {
+    return true;
+  }
+
+  if (isPlaceholderSegment(declaredSegment)) {
+    return false;
+  }
+
+  if (isDynamicSegment(actionSegment) || isDynamicSegment(declaredSegment)) {
     return true;
   }
 
   return false;
 }
 
-function hasPrefixSegments(prefix: string[], value: string[]): boolean {
-  if (prefix.length > value.length) {
+function actionHasPrefixSegments(prefix: string[], declaredValue: string[]): boolean {
+  if (prefix.length > declaredValue.length) {
     return false;
   }
 
   for (let index = 0; index < prefix.length; index += 1) {
-    if (!segmentsCompatible(prefix[index], value[index])) {
+    if (!actionSegmentMatchesDeclaredSegment(prefix[index], declaredValue[index])) {
       return false;
     }
   }
@@ -268,10 +287,12 @@ function actionAffectsDeclaredQueryKey(
   }
 
   if (actionQueryKey.matchMode === 'exact') {
-    return actionSegments.length === declaredSegments.length && hasPrefixSegments(actionSegments, declaredSegments);
+    return (
+      actionSegments.length === declaredSegments.length && actionHasPrefixSegments(actionSegments, declaredSegments)
+    );
   }
 
-  return hasPrefixSegments(actionSegments, declaredSegments);
+  return actionHasPrefixSegments(actionSegments, declaredSegments);
 }
 
 function isSetAnchoredConcreteKey(queryKey: QueryRecord['queryKey']): boolean {
@@ -312,6 +333,9 @@ export function buildGraph(roots: GraphRoot[], analysis: AnalysisResult): GraphD
   const declaredQueryNodeIds = new Set<string>();
   const declaredQueryKeyByNodeId = new Map<string, QueryRecord['queryKey']>();
   const declaredQueryProjectsByNodeId = new Map<string, Set<string>>();
+  const declaredQueryClientScopesByNodeId = new Map<string, Set<string>>();
+  const declaredQueryExecutionScopesByNodeId = new Map<string, Set<string>>();
+  const declaredQuerySuiteScopesByNodeId = new Map<string, Set<string>>();
   const queryKeyToProjectCounts = new Map<string, Map<string, number>>();
   const projectScopeCache = new Map<string, string>();
   const packageJsonCache = new Map<string, boolean>();
@@ -323,6 +347,9 @@ export function buildGraph(roots: GraphRoot[], analysis: AnalysisResult): GraphD
     resolution: QueryRecord['resolution'];
     file: string;
     projectScope: string;
+    clientScopeId?: string;
+    executionScopeId?: string;
+    suiteScopeId?: string;
     queryKey: QueryRecord['queryKey'];
     wildcard: boolean;
     queryKeyNodeId?: string;
@@ -336,8 +363,8 @@ export function buildGraph(roots: GraphRoot[], analysis: AnalysisResult): GraphD
 
     const fileNodeId = makeFileNodeId(absoluteFile);
     const actionNodeId = makeActionNodeId(record, index);
-    const queryKeyNodeId = makeQueryKeyNodeId(record.queryKey.id);
     const wildcardQuery = isWildcardQueryKey(record);
+    const queryKeyNodeId = wildcardQuery ? undefined : makeQueryKeyNodeId(projectScope, record.queryKey.id);
 
     if (!nodeMap.has(fileNodeId)) {
       nodeMap.set(fileNodeId, {
@@ -366,7 +393,7 @@ export function buildGraph(roots: GraphRoot[], analysis: AnalysisResult): GraphD
       });
     }
 
-    if (!wildcardQuery && !nodeMap.has(queryKeyNodeId)) {
+    if (queryKeyNodeId && !nodeMap.has(queryKeyNodeId)) {
       nodeMap.set(queryKeyNodeId, {
         id: queryKeyNodeId,
         kind: 'queryKey',
@@ -379,7 +406,7 @@ export function buildGraph(roots: GraphRoot[], analysis: AnalysisResult): GraphD
       });
     }
 
-    if (!wildcardQuery) {
+    if (queryKeyNodeId) {
       if (!queryKeyToProjects.has(queryKeyNodeId)) {
         queryKeyToProjects.set(queryKeyNodeId, new Set());
       }
@@ -402,6 +429,24 @@ export function buildGraph(roots: GraphRoot[], analysis: AnalysisResult): GraphD
         const projects = declaredQueryProjectsByNodeId.get(queryKeyNodeId) ?? new Set<string>();
         projects.add(projectScope);
         declaredQueryProjectsByNodeId.set(queryKeyNodeId, projects);
+
+        if (record.clientScopeId) {
+          const clientScopes = declaredQueryClientScopesByNodeId.get(queryKeyNodeId) ?? new Set<string>();
+          clientScopes.add(record.clientScopeId);
+          declaredQueryClientScopesByNodeId.set(queryKeyNodeId, clientScopes);
+        }
+
+        if (record.executionScopeId) {
+          const executionScopes = declaredQueryExecutionScopesByNodeId.get(queryKeyNodeId) ?? new Set<string>();
+          executionScopes.add(record.executionScopeId);
+          declaredQueryExecutionScopesByNodeId.set(queryKeyNodeId, executionScopes);
+        }
+
+        if (record.suiteScopeId) {
+          const suiteScopes = declaredQuerySuiteScopesByNodeId.get(queryKeyNodeId) ?? new Set<string>();
+          suiteScopes.add(record.suiteScopeId);
+          declaredQuerySuiteScopesByNodeId.set(queryKeyNodeId, suiteScopes);
+        }
       }
     }
 
@@ -424,13 +469,61 @@ export function buildGraph(roots: GraphRoot[], analysis: AnalysisResult): GraphD
       resolution: record.resolution,
       file: absoluteFile,
       projectScope,
+      clientScopeId: record.clientScopeId,
+      executionScopeId: record.executionScopeId,
+      suiteScopeId: record.suiteScopeId,
       queryKey: record.queryKey,
       wildcard: wildcardQuery,
-      queryKeyNodeId: wildcardQuery ? undefined : queryKeyNodeId,
+      queryKeyNodeId,
     });
   });
 
   const declaredQueryNodeIdList = [...declaredQueryNodeIds];
+
+  function filterTargetsByScope(
+    targets: string[],
+    clientScopeId: string | undefined,
+    executionScopeId: string | undefined,
+    suiteScopeId: string | undefined,
+    strictWhenScoped = false,
+  ): string[] {
+    if (executionScopeId) {
+      const executionScopedTargets = targets.filter((queryKeyNodeId) =>
+        declaredQueryExecutionScopesByNodeId.get(queryKeyNodeId)?.has(executionScopeId),
+      );
+      if (executionScopedTargets.length > 0) {
+        return executionScopedTargets;
+      }
+      if (strictWhenScoped) {
+        return [];
+      }
+    }
+
+    if (suiteScopeId) {
+      const suiteScopedTargets = targets.filter((queryKeyNodeId) =>
+        declaredQuerySuiteScopesByNodeId.get(queryKeyNodeId)?.has(suiteScopeId),
+      );
+      if (suiteScopedTargets.length > 0) {
+        return suiteScopedTargets;
+      }
+      if (strictWhenScoped) {
+        return [];
+      }
+    }
+
+    if (!clientScopeId) {
+      return targets;
+    }
+
+    const scopedTargets = targets.filter((queryKeyNodeId) =>
+      declaredQueryClientScopesByNodeId.get(queryKeyNodeId)?.has(clientScopeId),
+    );
+    if (scopedTargets.length > 0) {
+      return scopedTargets;
+    }
+
+    return strictWhenScoped ? [] : targets;
+  }
 
   for (const pending of pendingActionToQueryLinks) {
     let targets: string[] = [];
@@ -443,6 +536,13 @@ export function buildGraph(roots: GraphRoot[], analysis: AnalysisResult): GraphD
         const projects = declaredQueryProjectsByNodeId.get(queryKeyNodeId);
         return projects?.has(pending.projectScope) ?? false;
       });
+      targets = filterTargetsByScope(
+        targets,
+        pending.clientScopeId,
+        pending.executionScopeId,
+        pending.suiteScopeId,
+        pending.operation === 'clear' && Boolean(pending.executionScopeId || pending.suiteScopeId),
+      );
     } else if (pending.queryKeyNodeId) {
       const matchedTargets = declaredQueryNodeIdList.filter((queryKeyNodeId) => {
         const declaredQueryKey = declaredQueryKeyByNodeId.get(queryKeyNodeId);
@@ -457,7 +557,12 @@ export function buildGraph(roots: GraphRoot[], analysis: AnalysisResult): GraphD
 
         return actionAffectsDeclaredQueryKey(pending.queryKey, declaredQueryKey);
       });
-      targets = matchedTargets.length > 0 ? matchedTargets : [pending.queryKeyNodeId];
+      targets = filterTargetsByScope(
+        matchedTargets.length > 0 ? matchedTargets : [pending.queryKeyNodeId],
+        pending.clientScopeId,
+        pending.executionScopeId,
+        pending.suiteScopeId,
+      );
     }
     for (const target of targets) {
       if (pending.relation === 'sets' && target.startsWith('qk:') && isSetAnchoredConcreteKey(pending.queryKey)) {

@@ -936,6 +936,57 @@ function isPassThroughQueryKeyReference(node: t.Expression | undefined): boolean
   return /^querykeys?$/i.test(unwrapped.property.name);
 }
 
+function isQueryCacheLookupCall(node: t.Expression, resolver: QueryKeyResolver | undefined, depth: number): boolean {
+  if (depth >= MAX_RESOLVE_DEPTH) {
+    return false;
+  }
+
+  const unwrapped = unwrapExpression(node);
+  if (!t.isCallExpression(unwrapped)) {
+    return false;
+  }
+
+  const callee = unwrapExpression(unwrapped.callee as t.Expression);
+  if (!t.isMemberExpression(callee) || callee.computed || !t.isIdentifier(callee.property)) {
+    return false;
+  }
+
+  if (!['get', 'find'].includes(callee.property.name)) {
+    return false;
+  }
+
+  if (t.isIdentifier(callee.object) && callee.object.name.toLowerCase().includes('querycache')) {
+    return true;
+  }
+
+  if (!t.isExpression(callee.object)) {
+    return false;
+  }
+
+  const objectSegment = segmentFromExpression(callee.object, resolver, depth + 1).text.toLowerCase();
+  return objectSegment.includes('querycache') || objectSegment.includes('getquerycache');
+}
+
+function isPassThroughQueryInstanceReference(
+  node: t.Expression | undefined,
+  resolver: QueryKeyResolver | undefined,
+  depth = 0,
+): boolean {
+  if (!node || depth >= MAX_RESOLVE_DEPTH) {
+    return false;
+  }
+
+  const unwrapped = unwrapExpression(node);
+  if (t.isIdentifier(unwrapped) || t.isMemberExpression(unwrapped)) {
+    const resolved = resolver?.resolveReference(unwrapped);
+    if (resolved) {
+      return isPassThroughQueryInstanceReference(resolved, resolver, depth + 1);
+    }
+  }
+
+  return isQueryCacheLookupCall(unwrapped, resolver, depth + 1);
+}
+
 function buildPassThroughActionKey(mode: MatchMode): NormalizedQueryKey {
   return {
     id: 'pass-through-query-key',
@@ -959,12 +1010,16 @@ function normalizeActionKeyOrWildcard(
     normalized.source === 'expression' &&
     normalized.segments.length === 1 &&
     !normalized.display.startsWith('[');
-  if (unresolvedQueryKeyReference) {
+  if (unresolvedQueryKeyReference || isPassThroughQueryInstanceReference(node, resolver)) {
     return buildPassThroughActionKey(mode);
   }
 
   if (shouldTreatAsWildcardActionKey(normalized)) {
     if (isPassThroughQueryKeyReference(node)) {
+      return buildPassThroughActionKey(mode);
+    }
+
+    if (isPassThroughQueryInstanceReference(node, resolver)) {
       return buildPassThroughActionKey(mode);
     }
 
@@ -1098,7 +1153,7 @@ export function segmentFromExpression(
       const segment = t.isExpression(expr)
         ? segmentFromExpression(expr, resolver, depth + 1)
         : { text: 'type', isStatic: false };
-      pieces.push(`\${${segment.text}}`);
+      pieces.push(`\${${segment.text.startsWith('$') ? segment.text.slice(1) : segment.text}}`);
       isStatic = isStatic && segment.isStatic;
     }
 

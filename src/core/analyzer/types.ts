@@ -14,6 +14,8 @@ export interface ParseContext {
   refetchObjectNames: Set<string>;
   refetchFnQueryKeys: Map<string, NormalizedQueryKey>;
   refetchObjectQueryKeys: Map<string, NormalizedQueryKey>;
+  refetchFnScopeQueryKeys: Map<string, NormalizedQueryKey>;
+  refetchObjectScopeQueryKeys: Map<string, NormalizedQueryKey>;
 }
 
 export interface SegmentResult {
@@ -38,6 +40,7 @@ export interface FileSymbols {
   filePath: string;
   values: Map<string, t.Expression>;
   functions: Map<string, t.Expression>;
+  mutableValues: Set<string>;
   imports: Map<string, ImportBinding>;
   exports: Map<string, string>;
   reExports: ReExportBinding[];

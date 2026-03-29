@@ -45,7 +45,7 @@ async function analyzeParsedFiles(parsedAsts: Map<string, t.File>, rootPath: str
     const resolver = createQueryKeyResolver(filePath, symbolIndex, rootPath);
 
     scanImports(ast, context);
-    scanLocalBindings(ast, context, resolver);
+    scanLocalBindings(ast, context, resolver, filePath);
     scanCalls(ast, filePath, context, records, resolver);
   }
 

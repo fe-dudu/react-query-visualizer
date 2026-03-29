@@ -30,6 +30,7 @@
     "release:marketplaces": "pnpm run build && pnpm run release:vsce && pnpm run release:ovsx",
     "release:ovsx": "pnpm dlx ovsx publish --no-dependencies --skip-duplicate",
     "release:vsce": "pnpm exec vsce publish --no-dependencies --skip-duplicate",
+    "test": "node scripts/runTests.mjs",
     "type-check": "tsc --noEmit",
     "version:changeset": "changeset version",
     "watch:webview": "pnpm run build:webview:bundle -- --watch"

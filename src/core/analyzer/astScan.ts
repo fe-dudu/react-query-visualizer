@@ -11,11 +11,10 @@ import {
   queryClientTypeAnnotationCertainty,
 } from './certainty';
 import { ACTION_METHOD_TO_RELATION, QUERY_CLIENT_DECLARE_METHODS, QUERY_HOOKS } from './constants';
-import { isQueryLikeModule, mergeResolution, setCertainty } from './context';
+import { getCertainty, isQueryLikeModule, mergeResolution, setCertainty } from './context';
 import {
   findObjectPropertyValue,
   inferActionQueryKey,
-  inferHookQueryKey,
   inferHookQueryKeys,
   isHookCallDirectQueryKeyDeclaration,
   locationFromNode,
@@ -934,6 +933,42 @@ function resolveLocalActionArgExpression(
   }
 
   if (binding.kind === 'module' || !binding.constant) {
+    if (binding.kind === 'module') {
+      return undefined;
+    }
+
+    const assignedExpressions: t.Expression[] = [];
+    for (const violation of binding.constantViolations) {
+      if (!violation.isAssignmentExpression()) {
+        return undefined;
+      }
+
+      const left = violation.node.left;
+      if (!t.isIdentifier(left) || left.name !== binding.identifier.name) {
+        return undefined;
+      }
+
+      if (!t.isExpression(violation.node.right)) {
+        return undefined;
+      }
+
+      assignedExpressions.push(unwrapExpression(violation.node.right));
+    }
+
+    if (assignedExpressions.length === 1) {
+      const [assignedExpression] = assignedExpressions;
+      if (assignedExpression) {
+        const mutableResolved = resolveLocalActionArgExpression(
+          callPath,
+          assignedExpression,
+          resolver,
+          depth + 1,
+          seen,
+        );
+        return mutableResolved ?? assignedExpression;
+      }
+    }
+
     return undefined;
   }
 
@@ -1077,7 +1112,21 @@ export function scanImports(ast: t.File, context: ParseContext): void {
   });
 }
 
-export function scanLocalBindings(ast: t.File, context: ParseContext, resolver?: QueryKeyResolver): void {
+export function scanLocalBindings(
+  ast: t.File,
+  context: ParseContext,
+  resolver?: QueryKeyResolver,
+  filePath = '',
+): void {
+  function bindingScopeId(binding: Binding): string | undefined {
+    const loc = binding.identifier.loc?.start;
+    if (!loc) {
+      return undefined;
+    }
+
+    return `${filePath}:${loc.line}:${loc.column + 1}:${binding.identifier.name}`;
+  }
+
   function trackIdentifierIfTypedQueryClient(identifier: t.Identifier): void {
     const typeCertainty = queryClientTypeAnnotationCertainty(identifier.typeAnnotation, context);
     if (!typeCertainty) {
@@ -1491,7 +1540,15 @@ export function scanLocalBindings(ast: t.File, context: ParseContext, resolver?:
         return;
       }
 
-      const hookQueryKey = inferHookQueryKey(init.arguments, resolver);
+      const resolvedHookArgs = resolveActionArgsWithLocalBindings(
+        variablePath as unknown as NodePath<t.CallExpression | t.OptionalCallExpression>,
+        init.arguments,
+        resolver,
+      );
+      const [hookQueryKey] = inferHookQueryKeys(hook.hook, resolvedHookArgs, resolver);
+      if (!hookQueryKey) {
+        return;
+      }
 
       if (t.isObjectPattern(variablePath.node.id)) {
         for (const property of variablePath.node.id.properties) {
@@ -1502,6 +1559,11 @@ export function scanLocalBindings(ast: t.File, context: ParseContext, resolver?:
           if (t.isIdentifier(property.key) && property.key.name === 'refetch' && t.isIdentifier(property.value)) {
             context.refetchFnNames.add(property.value.name);
             context.refetchFnQueryKeys.set(property.value.name, hookQueryKey);
+            const binding = variablePath.scope.getBinding(property.value.name);
+            const scopeId = binding ? bindingScopeId(binding) : undefined;
+            if (scopeId) {
+              context.refetchFnScopeQueryKeys.set(scopeId, hookQueryKey);
+            }
           }
         }
       }
@@ -1509,6 +1571,11 @@ export function scanLocalBindings(ast: t.File, context: ParseContext, resolver?:
       if (t.isIdentifier(variablePath.node.id)) {
         context.refetchObjectNames.add(variablePath.node.id.name);
         context.refetchObjectQueryKeys.set(variablePath.node.id.name, hookQueryKey);
+        const binding = variablePath.scope.getBinding(variablePath.node.id.name);
+        const scopeId = binding ? bindingScopeId(binding) : undefined;
+        if (scopeId) {
+          context.refetchObjectScopeQueryKeys.set(scopeId, hookQueryKey);
+        }
       }
     },
   });
@@ -1521,6 +1588,107 @@ export function scanCalls(
   records: QueryRecord[],
   resolver?: QueryKeyResolver,
 ): void {
+  function bindingScopeId(binding: Binding): string | undefined {
+    const loc = binding.identifier.loc?.start;
+    if (!loc) {
+      return undefined;
+    }
+
+    return `${filePath}:${loc.line}:${loc.column + 1}:${binding.identifier.name}`;
+  }
+
+  function callbackScopeIdFromPath(pathNode: NodePath<t.Node>): string | undefined {
+    let current: NodePath<t.Node> | null = pathNode;
+    while (current) {
+      if ((current.isCallExpression() || current.isOptionalCallExpression()) && t.isExpression(current.node.callee)) {
+        const callee = current.node.callee;
+        let calleeName: string | undefined;
+        if (t.isIdentifier(callee)) {
+          calleeName = callee.name;
+        } else if (t.isMemberExpression(callee) && t.isIdentifier(callee.property)) {
+          calleeName = callee.property.name;
+        }
+
+        if (calleeName && ['it', 'test'].includes(calleeName)) {
+          const loc = current.node.loc?.start;
+          if (loc) {
+            return `${filePath}:${loc.line}:${loc.column + 1}:${calleeName}`;
+          }
+        }
+      }
+
+      current = current.parentPath;
+    }
+
+    return undefined;
+  }
+
+  function suiteScopeIdFromPath(pathNode: NodePath<t.Node>): string | undefined {
+    let current: NodePath<t.Node> | null = pathNode;
+    while (current) {
+      if ((current.isCallExpression() || current.isOptionalCallExpression()) && t.isExpression(current.node.callee)) {
+        const callee = current.node.callee;
+        let calleeName: string | undefined;
+        if (t.isIdentifier(callee)) {
+          calleeName = callee.name;
+        } else if (t.isMemberExpression(callee) && t.isIdentifier(callee.property)) {
+          calleeName = callee.property.name;
+        }
+
+        if (calleeName === 'describe') {
+          const loc = current.node.loc?.start;
+          if (loc) {
+            return `${filePath}:${loc.line}:${loc.column + 1}:${calleeName}`;
+          }
+        }
+      }
+
+      current = current.parentPath;
+    }
+
+    return callbackScopeIdFromPath(pathNode);
+  }
+
+  function queryClientScopeIdFromExpression(
+    callPath: NodePath<t.CallExpression | t.OptionalCallExpression>,
+    expression: t.Expression | t.Super | t.V8IntrinsicIdentifier,
+    depth = 0,
+  ): string | undefined {
+    if (depth >= 8) {
+      return undefined;
+    }
+
+    if (t.isIdentifier(expression)) {
+      const binding = callPath.scope.getBinding(expression.name);
+      if (binding && getCertainty(context.queryClientVars, expression.name)) {
+        return bindingScopeId(binding);
+      }
+
+      const resolved = resolver?.resolveReference(expression);
+      if (resolved) {
+        return queryClientScopeIdFromExpression(callPath, resolved, depth + 1);
+      }
+
+      return undefined;
+    }
+
+    if (t.isMemberExpression(expression) && t.isExpression(expression.object)) {
+      const fromObject = queryClientScopeIdFromExpression(callPath, expression.object, depth + 1);
+      if (fromObject) {
+        return fromObject;
+      }
+
+      const resolved = resolver?.resolveReference(expression);
+      if (resolved) {
+        return queryClientScopeIdFromExpression(callPath, resolved, depth + 1);
+      }
+
+      return undefined;
+    }
+
+    return undefined;
+  }
+
   function memberCallParts(
     callee: t.Expression | t.Super | t.V8IntrinsicIdentifier,
   ): { method: string; object: t.Expression | t.Super | t.V8IntrinsicIdentifier } | undefined {
@@ -2413,11 +2581,17 @@ export function scanCalls(
     }
 
     const { method, object } = member;
+    const clientScopeId = t.isExpression(object) ? queryClientScopeIdFromExpression(callPath, object) : undefined;
+    const executionScopeId = callbackScopeIdFromPath(callPath);
+    const suiteScopeId = suiteScopeIdFromPath(callPath);
 
     if (method === 'refetch') {
       const objectName = extractLeafIdentifier(object);
       if (objectName && context.refetchObjectNames.has(objectName)) {
+        const objectBinding = t.isIdentifier(object) ? callPath.scope.getBinding(object.name) : undefined;
+        const objectScopeId = objectBinding ? bindingScopeId(objectBinding) : undefined;
         const queryKey =
+          (objectScopeId ? context.refetchObjectScopeQueryKeys.get(objectScopeId) : undefined) ??
           context.refetchObjectQueryKeys.get(objectName) ??
           normalizeQueryKey(undefined, { wildcardIfMissing: true, defaultMode: 'all' }, resolver);
         addRecord(records, {
@@ -2427,6 +2601,9 @@ export function scanCalls(
           loc,
           queryKey,
           resolution: 'dynamic',
+          clientScopeId,
+          executionScopeId,
+          suiteScopeId,
         });
         return true;
       }
@@ -2449,6 +2626,9 @@ export function scanCalls(
         queryKey,
         resolution: mergeResolution(certainty, queryKey.resolution),
         declaresDirectly,
+        clientScopeId,
+        executionScopeId,
+        suiteScopeId,
       });
       return true;
     }
@@ -2480,6 +2660,9 @@ export function scanCalls(
         loc,
         queryKey: candidate,
         resolution: mergeResolution(certainty, candidate.resolution),
+        clientScopeId,
+        executionScopeId,
+        suiteScopeId,
       });
     }
 
@@ -2493,6 +2676,13 @@ export function scanCalls(
 
       const hook = hookCallInfo(node.callee, context);
       if (hook) {
+        const secondArg = node.arguments[1];
+        const clientScopeId =
+          secondArg && !t.isSpreadElement(secondArg) && t.isExpression(secondArg)
+            ? queryClientScopeIdFromExpression(callPath, secondArg)
+            : undefined;
+        const executionScopeId = callbackScopeIdFromPath(callPath);
+        const suiteScopeId = suiteScopeIdFromPath(callPath);
         const hookArgs = resolveActionArgsWithLocalBindings(callPath, node.arguments, resolver);
         const inferredQueryKeys = inferHookQueryKeys(hook.hook, hookArgs, resolver);
         const expandedByIterator = expandedHookQueryKeysFromIteratorParam(callPath, hook.hook, hookArgs);
@@ -2513,13 +2703,21 @@ export function scanCalls(
             queryKey,
             resolution: mergeResolution(queryKey.resolution, hook.resolution),
             declaresDirectly,
+            clientScopeId,
+            executionScopeId,
+            suiteScopeId,
           });
         }
         return;
       }
 
       if (t.isIdentifier(node.callee) && context.refetchFnNames.has(node.callee.name)) {
+        const executionScopeId = callbackScopeIdFromPath(callPath);
+        const suiteScopeId = suiteScopeIdFromPath(callPath);
+        const fnBinding = callPath.scope.getBinding(node.callee.name);
+        const fnScopeId = fnBinding ? bindingScopeId(fnBinding) : undefined;
         const queryKey =
+          (fnScopeId ? context.refetchFnScopeQueryKeys.get(fnScopeId) : undefined) ??
           context.refetchFnQueryKeys.get(node.callee.name) ??
           normalizeQueryKey(undefined, { wildcardIfMissing: true, defaultMode: 'all' }, resolver);
         addRecord(records, {
@@ -2529,6 +2727,8 @@ export function scanCalls(
           loc,
           queryKey,
           resolution: 'dynamic',
+          executionScopeId,
+          suiteScopeId,
         });
         return;
       }

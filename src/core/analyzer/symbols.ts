@@ -264,6 +264,49 @@ function collectLocalVariableSymbol(pathNode: NodePath<t.VariableDeclarator>, ta
   table.functions.set(id.name, returned);
 }
 
+function collectAssignedIdentifiers(target: t.Node, names: Set<string>): void {
+  if (t.isIdentifier(target)) {
+    names.add(target.name);
+    return;
+  }
+
+  if (t.isObjectPattern(target)) {
+    for (const property of target.properties) {
+      if (t.isRestElement(property)) {
+        collectAssignedIdentifiers(property.argument, names);
+        continue;
+      }
+
+      if (t.isObjectProperty(property)) {
+        collectAssignedIdentifiers(property.value as t.LVal, names);
+      }
+    }
+    return;
+  }
+
+  if (t.isArrayPattern(target)) {
+    for (const element of target.elements) {
+      if (!element) {
+        continue;
+      }
+
+      if (t.isRestElement(element)) {
+        collectAssignedIdentifiers(element.argument, names);
+        continue;
+      }
+
+      if (t.isLVal(element)) {
+        collectAssignedIdentifiers(element, names);
+      }
+    }
+    return;
+  }
+
+  if (t.isAssignmentPattern(target)) {
+    collectAssignedIdentifiers(target.left, names);
+  }
+}
+
 function isQueryKeySymbolName(name: string): boolean {
   const normalized = name.toLowerCase();
   if (normalized === 'querykey') {
@@ -375,6 +418,7 @@ export function buildFileSymbols(filePath: string, ast: t.File): FileSymbols {
     filePath,
     values: new Map(),
     functions: new Map(),
+    mutableValues: new Set(),
     imports: new Map(),
     exports: new Map(),
     reExports: [],
@@ -434,6 +478,16 @@ export function buildFileSymbols(filePath: string, ast: t.File): FileSymbols {
       }
 
       table.functions.set(identifier.name, returned);
+    },
+
+    UpdateExpression(updatePath: NodePath<t.UpdateExpression>) {
+      if (t.isIdentifier(updatePath.node.argument) || t.isMemberExpression(updatePath.node.argument)) {
+        collectAssignedIdentifiers(updatePath.node.argument, table.mutableValues);
+      }
+    },
+
+    AssignmentExpression(assignmentPath: NodePath<t.AssignmentExpression>) {
+      collectAssignedIdentifiers(assignmentPath.node.left, table.mutableValues);
     },
 
     ExportNamedDeclaration(exportPath: NodePath<t.ExportNamedDeclaration>) {

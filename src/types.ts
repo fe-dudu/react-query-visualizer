@@ -44,6 +44,9 @@ export interface QueryRecord {
   queryKey: NormalizedQueryKey;
   resolution: Resolution;
   declaresDirectly?: boolean;
+  clientScopeId?: string;
+  executionScopeId?: string;
+  suiteScopeId?: string;
 }
 
 export interface AnalysisResult {

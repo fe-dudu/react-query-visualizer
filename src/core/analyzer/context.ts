@@ -14,6 +14,8 @@ export function createParseContext(): ParseContext {
     refetchObjectNames: new Set(),
     refetchFnQueryKeys: new Map(),
     refetchObjectQueryKeys: new Map(),
+    refetchFnScopeQueryKeys: new Map(),
+    refetchObjectScopeQueryKeys: new Map(),
   };
 }
 

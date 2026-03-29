@@ -2,9 +2,11 @@ import { existsSync, readFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import * as path from 'node:path';
 import * as t from '@babel/types';
+import fg from 'fast-glob';
 
+import { parseSource } from './parser';
 import type { ImportBinding, QueryKeyResolver, SymbolIndex } from './types';
-import { extractFunctionReturnExpression, normalizeAnalyzerPath, unwrapExpression } from './symbols';
+import { buildFileSymbols, extractFunctionReturnExpression, normalizeAnalyzerPath, unwrapExpression } from './symbols';
 
 const RESOLVE_EXTENSIONS = ['.ts', '.tsx', '.js', '.jsx', '.mts', '.cts', '.mjs', '.cjs'];
 const MAX_DEPTH = 24;
@@ -23,11 +25,13 @@ interface PathAliasEntry {
 const nearestConfigCache = new Map<string, string | null>();
 const parsedAliasConfigCache = new Map<string, ResolvedPathAliases>();
 const aliasEntriesCache = new Map<string, PathAliasEntry[]>();
+const workspacePackageCache = new Map<string, Map<string, { dir: string; entryFile: string }>>();
 
 export function resetResolverCache(): void {
   nearestConfigCache.clear();
   parsedAliasConfigCache.clear();
   aliasEntriesCache.clear();
+  workspacePackageCache.clear();
 }
 
 function commonPathPrefixLength(left: string, right: string): number {
@@ -526,7 +530,7 @@ function resolveModuleFile(
 
         for (const candidate of candidates) {
           const normalized = normalizeAnalyzerPath(candidate);
-          if (fileSet.has(normalized)) {
+          if (fileSet.has(normalized) || existsSync(normalized)) {
             matches.push(normalized);
           }
         }
@@ -534,6 +538,10 @@ function resolveModuleFile(
     }
 
     if (matches.length === 0) {
+      const packageResolved = resolveWorkspacePackageImport(source, fileSet, workspaceRoot);
+      if (packageResolved) {
+        return packageResolved;
+      }
       return undefined;
     }
 
@@ -591,8 +599,144 @@ function resolveModuleFile(
 
   for (const candidate of candidates) {
     const normalized = normalizeAnalyzerPath(candidate);
+    if (fileSet.has(normalized) || existsSync(normalized)) {
+      return normalized;
+    }
+  }
+
+  return undefined;
+}
+
+function packageJsonEntryCandidates(packageDir: string, packageJson: Record<string, unknown>): string[] {
+  const candidates: string[] = [];
+  const exportsField = packageJson.exports;
+  if (typeof exportsField === 'string') {
+    candidates.push(exportsField);
+  } else if (exportsField && typeof exportsField === 'object' && !Array.isArray(exportsField)) {
+    const rootExport = asRecord((exportsField as Record<string, unknown>)['.']);
+    if (rootExport) {
+      for (const key of ['default', 'types', 'import', 'require']) {
+        const value = rootExport[key];
+        if (typeof value === 'string') {
+          candidates.push(value);
+        }
+      }
+    }
+  }
+
+  for (const key of ['module', 'main', 'types']) {
+    const value = packageJson[key];
+    if (typeof value === 'string') {
+      candidates.push(value);
+    }
+  }
+
+  candidates.push('src/index.ts', 'src/index.tsx', 'index.ts', 'index.tsx');
+  return [...new Set(candidates.map((candidate) => path.resolve(packageDir, candidate)))];
+}
+
+function resolveExistingSourceFile(candidate: string, fileSet: Set<string>): string | undefined {
+  const normalizedCandidate = normalizeAnalyzerPath(candidate);
+  if (fileSet.has(normalizedCandidate)) {
+    return normalizedCandidate;
+  }
+
+  const hasExplicitExtension = RESOLVE_EXTENSIONS.some((ext) => candidate.endsWith(ext));
+  const variants = hasExplicitExtension
+    ? [candidate]
+    : [
+        ...RESOLVE_EXTENSIONS.map((ext) => `${candidate}${ext}`),
+        ...RESOLVE_EXTENSIONS.map((ext) => path.join(candidate, `index${ext}`)),
+      ];
+
+  for (const variant of variants) {
+    const normalized = normalizeAnalyzerPath(variant);
     if (fileSet.has(normalized)) {
       return normalized;
+    }
+  }
+
+  return undefined;
+}
+
+function buildWorkspacePackageMap(
+  fileSet: Set<string>,
+  workspaceRoot: string,
+): Map<string, { dir: string; entryFile: string }> {
+  const cacheKey = workspaceRoot;
+  const cached = workspacePackageCache.get(cacheKey);
+  if (cached) {
+    return cached;
+  }
+
+  const packages = new Map<string, { dir: string; entryFile: string }>();
+  const normalizedRoot = normalizeAnalyzerPath(workspaceRoot);
+  const packageJsonPaths = fg.sync(['**/package.json'], {
+    cwd: normalizedRoot,
+    absolute: true,
+    onlyFiles: true,
+    suppressErrors: true,
+    unique: true,
+    ignore: ['**/node_modules/**', '**/dist/**', '**/build/**', '**/.git/**'],
+  });
+
+  for (const packageJsonPath of packageJsonPaths) {
+    const normalizedPackageJsonPath = normalizeAnalyzerPath(packageJsonPath);
+    const packageDir = path.dirname(normalizedPackageJsonPath);
+    const parsed = parseJsonObject(readFileSync(normalizedPackageJsonPath, 'utf8'));
+    const packageName = typeof parsed?.name === 'string' ? parsed.name : undefined;
+    if (!packageName || !parsed) {
+      continue;
+    }
+
+    const entryFile = packageJsonEntryCandidates(packageDir, parsed)
+      .map((candidate) => resolveExistingSourceFile(candidate, fileSet) ?? normalizeAnalyzerPath(candidate))
+      .find((candidate) => existsSync(candidate));
+    if (!entryFile) {
+      continue;
+    }
+
+    packages.set(packageName, {
+      dir: normalizeAnalyzerPath(packageDir),
+      entryFile: normalizeAnalyzerPath(entryFile),
+    });
+  }
+
+  workspacePackageCache.set(cacheKey, packages);
+  return packages;
+}
+
+function resolveWorkspacePackageImport(
+  source: string,
+  fileSet: Set<string>,
+  workspaceRoot: string,
+): string | undefined {
+  const packages = buildWorkspacePackageMap(fileSet, workspaceRoot);
+  const sortedPackageNames = [...packages.keys()].sort((left, right) => right.length - left.length);
+
+  for (const packageName of sortedPackageNames) {
+    if (source !== packageName && !source.startsWith(`${packageName}/`)) {
+      continue;
+    }
+
+    const entry = packages.get(packageName);
+    if (!entry) {
+      continue;
+    }
+
+    if (source === packageName) {
+      return entry.entryFile;
+    }
+
+    const subpath = source.slice(packageName.length + 1);
+    const resolvedSubpath = resolveExistingSourceFile(path.join(entry.dir, subpath), fileSet);
+    if (resolvedSubpath) {
+      return resolvedSubpath;
+    }
+
+    const sourceResolvedSubpath = resolveExistingSourceFile(path.join(entry.dir, 'src', subpath), fileSet);
+    if (sourceResolvedSubpath) {
+      return sourceResolvedSubpath;
     }
   }
 
@@ -673,6 +817,22 @@ export function createQueryKeyResolver(filePath: string, index: SymbolIndex, wor
     return expressionOrigins.get(node) ?? fallbackFile;
   };
 
+  const ensureIndexedFile = (targetFile: string): void => {
+    const normalizedTargetFile = normalizeAnalyzerPath(targetFile);
+    if (index.files.has(normalizedTargetFile) || !existsSync(normalizedTargetFile)) {
+      return;
+    }
+
+    try {
+      const raw = readFileSync(normalizedTargetFile, 'utf8');
+      const ast = parseSource(raw, normalizedTargetFile);
+      index.files.set(normalizedTargetFile, buildFileSymbols(normalizedTargetFile, ast));
+      index.fileSet.add(normalizedTargetFile);
+    } catch {
+      // Ignore unparseable support files and let normal resolution fail closed.
+    }
+  };
+
   const resolveExportValue = (
     targetFile: string,
     exportName: string,
@@ -691,15 +851,19 @@ export function createQueryKeyResolver(filePath: string, index: SymbolIndex, wor
 
     const symbols = index.files.get(targetFile);
     if (!symbols) {
+      ensureIndexedFile(targetFile);
+    }
+    const refreshedSymbols = index.files.get(targetFile);
+    if (!refreshedSymbols) {
       return undefined;
     }
 
-    const localName = symbols.exports.get(exportName);
+    const localName = refreshedSymbols.exports.get(exportName);
     if (localName) {
       return resolveLocalValue(targetFile, localName, depth + 1, seen);
     }
 
-    for (const reExport of symbols.reExports) {
+    for (const reExport of refreshedSymbols.reExports) {
       if (reExport.all) {
         const nestedFile = resolveModuleFile(targetFile, reExport.source, index.fileSet, normalizedWorkspaceRoot);
         if (!nestedFile) {
@@ -751,15 +915,19 @@ export function createQueryKeyResolver(filePath: string, index: SymbolIndex, wor
 
     const symbols = index.files.get(targetFile);
     if (!symbols) {
+      ensureIndexedFile(targetFile);
+    }
+    const refreshedSymbols = index.files.get(targetFile);
+    if (!refreshedSymbols) {
       return undefined;
     }
 
-    const localName = symbols.exports.get(exportName);
+    const localName = refreshedSymbols.exports.get(exportName);
     if (localName) {
       return resolveLocalFunctionReturn(targetFile, localName, depth + 1, seen);
     }
 
-    for (const reExport of symbols.reExports) {
+    for (const reExport of refreshedSymbols.reExports) {
       if (reExport.all) {
         const nestedFile = resolveModuleFile(targetFile, reExport.source, index.fileSet, normalizedWorkspaceRoot);
         if (!nestedFile) {
@@ -848,6 +1016,7 @@ export function createQueryKeyResolver(filePath: string, index: SymbolIndex, wor
     if (!targetFile) {
       return undefined;
     }
+    ensureIndexedFile(targetFile);
 
     return resolveExportValue(targetFile, memberName, depth + 1, seen);
   };
@@ -870,11 +1039,18 @@ export function createQueryKeyResolver(filePath: string, index: SymbolIndex, wor
 
     const symbols = index.files.get(fromFile);
     if (!symbols) {
+      ensureIndexedFile(fromFile);
+    }
+    const refreshedSymbols = index.files.get(fromFile);
+    if (!refreshedSymbols) {
       return undefined;
     }
 
-    const localValue = symbols.values.get(localName);
+    const localValue = refreshedSymbols.values.get(localName);
     if (localValue) {
+      if (refreshedSymbols.mutableValues.has(localName)) {
+        return undefined;
+      }
       if (t.isIdentifier(localValue) && localValue.name !== localName) {
         const resolvedAlias = resolveLocalValue(fromFile, localValue.name, depth + 1, seen) ?? localValue;
         return markExpressionOrigin(resolvedAlias, fromFile);
@@ -883,12 +1059,12 @@ export function createQueryKeyResolver(filePath: string, index: SymbolIndex, wor
       return markExpressionOrigin(localValue, fromFile);
     }
 
-    const localFunctionReturn = symbols.functions.get(localName);
+    const localFunctionReturn = refreshedSymbols.functions.get(localName);
     if (localFunctionReturn) {
       return markExpressionOrigin(localFunctionReturn, fromFile);
     }
 
-    const importBinding = symbols.imports.get(localName);
+    const importBinding = refreshedSymbols.imports.get(localName);
     if (!importBinding) {
       return undefined;
     }
@@ -914,16 +1090,23 @@ export function createQueryKeyResolver(filePath: string, index: SymbolIndex, wor
 
     const symbols = index.files.get(fromFile);
     if (!symbols) {
+      ensureIndexedFile(fromFile);
+    }
+    const refreshedSymbols = index.files.get(fromFile);
+    if (!refreshedSymbols) {
       return undefined;
     }
 
-    const localFunctionReturn = symbols.functions.get(localName);
+    const localFunctionReturn = refreshedSymbols.functions.get(localName);
     if (localFunctionReturn) {
       return markExpressionOrigin(localFunctionReturn, fromFile);
     }
 
-    const localValue = symbols.values.get(localName);
+    const localValue = refreshedSymbols.values.get(localName);
     if (localValue) {
+      if (refreshedSymbols.mutableValues.has(localName)) {
+        return undefined;
+      }
       if (t.isIdentifier(localValue) && localValue.name !== localName) {
         return resolveLocalFunctionReturn(fromFile, localValue.name, depth + 1, seen);
       }
@@ -936,7 +1119,7 @@ export function createQueryKeyResolver(filePath: string, index: SymbolIndex, wor
       return undefined;
     }
 
-    const importBinding = symbols.imports.get(localName);
+    const importBinding = refreshedSymbols.imports.get(localName);
     if (!importBinding) {
       return undefined;
     }
