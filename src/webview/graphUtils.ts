@@ -46,6 +46,22 @@ function summarizeGroupedResolution(current: GraphNode, next: GraphNode): GraphN
   return 'static';
 }
 
+function groupedQueryRepresentative(current: GraphNode, next: GraphNode): GraphNode {
+  const currentDeclared = Number(current.metrics?.declaredCallsites ?? 0);
+  const nextDeclared = Number(next.metrics?.declaredCallsites ?? 0);
+  if (currentDeclared !== nextDeclared) {
+    return nextDeclared > currentDeclared ? next : current;
+  }
+
+  const currentAffected = Number(current.metrics?.affectedFiles ?? 0);
+  const nextAffected = Number(next.metrics?.affectedFiles ?? 0);
+  if (currentAffected !== nextAffected) {
+    return nextAffected > currentAffected ? next : current;
+  }
+
+  return next.label.localeCompare(current.label) < 0 ? next : current;
+}
+
 function updateAllowedIdsForMatchedActions(
   scopedEdges: GraphEdge[],
   nodeById: Map<string, GraphNode>,
@@ -158,6 +174,25 @@ function makeNodeSubtitle(
     title: node.label,
     subtitle: `QueryKey node · ${actionCount} callsite${actionCount === 1 ? '' : 's'} in ${fileCount} file${fileCount === 1 ? '' : 's'}${declareText}${groupedText}`,
   };
+}
+
+function isPlaceholderOnlyQueryLabel(label: string): boolean {
+  const normalized = label.trim();
+  if (!normalized) {
+    return false;
+  }
+
+  return normalized.startsWith('$') || normalized.startsWith('[$');
+}
+
+function filterActionQueryLabels(labels: string[]): string[] {
+  const deduped = [...new Set(labels)];
+  const specificLabels = deduped.filter((label) => !isPlaceholderOnlyQueryLabel(label));
+  if (specificLabels.length > 0) {
+    return specificLabels;
+  }
+
+  return deduped;
 }
 
 function actionRelation(actionNode: GraphNode): OperationRelation | null {
@@ -424,7 +459,7 @@ function buildExplanationForAction(
     files: fileLabel ? [fileRef(fileLabel, filePath)] : [],
     actions: [actionLabel(selectedNode)],
     declarations: [],
-    queryKeys: queryNodes.map((node) => node.label),
+    queryKeys: filterActionQueryLabels(queryNodes.map((node) => node.label)),
   };
 }
 
@@ -491,7 +526,11 @@ function buildExplanationForQuery(
   }
 
   const declarationNodeById = new Map(declarationGraph.nodes.map((node) => [node.id, node]));
-  const declarations = collectDeclarationCallsitesForQuery(declarationGraph, selectedNode.id, declarationNodeById);
+  const declarationTargetId =
+    typeof selectedNode.metrics?.representativeQueryNodeId === 'string'
+      ? selectedNode.metrics.representativeQueryNodeId
+      : selectedNode.id;
+  const declarations = collectDeclarationCallsitesForQuery(declarationGraph, declarationTargetId, declarationNodeById);
   const declarationSummary =
     declarations.length > 0
       ? ` Defined in ${declarations.length} callsite${declarations.length === 1 ? '' : 's'}.`
@@ -533,24 +572,29 @@ export function collapseGraphIfLarge(graph: GraphData, threshold = 800): { graph
       groupedQueryNodes.set(groupId, {
         id: groupId,
         kind: 'queryKey',
-        label: `Q:${root}/*`,
+        label: node.label,
         resolution: node.resolution,
         metrics: {
           grouped: 1,
           affectedFiles,
+          declaredCallsites: Number(node.metrics?.declaredCallsites ?? 0),
           rootSegment: root,
           projectScope,
+          representativeQueryNodeId: node.id,
         },
       });
       continue;
     }
 
+    const representative = groupedQueryRepresentative(current, node);
     groupedQueryNodes.set(groupId, {
       ...current,
+      label: representative.label,
       metrics: {
         ...current.metrics,
         grouped: Number(current.metrics?.grouped ?? 1) + 1,
         affectedFiles: Number(current.metrics?.affectedFiles ?? 0) + affectedFiles,
+        representativeQueryNodeId: representative.id,
       },
       resolution: summarizeGroupedResolution(current, node),
     });
@@ -591,8 +635,6 @@ export function collapseGraphIfLarge(graph: GraphData, threshold = 800): { graph
 
 export function computeVisibleGraph(graph: GraphData, filters: FilterState): GraphData {
   const nodeById = new Map(graph.nodes.map((node) => [node.id, node]));
-  const allQueryKeyNodes = graph.nodes.filter((node) => node.kind === 'queryKey');
-  const allQueryKeyIds = new Set(allQueryKeyNodes.map((node) => node.id));
   const enabledActionIds = new Set(
     graph.nodes
       .filter((node) => {
@@ -613,12 +655,12 @@ export function computeVisibleGraph(graph: GraphData, filters: FilterState): Gra
   if (enabledActionIds.size === 0) {
     return {
       ...graph,
-      nodes: allQueryKeyNodes,
+      nodes: [],
       edges: [],
       summary: {
         files: 0,
         actions: 0,
-        queryKeys: allQueryKeyNodes.length,
+        queryKeys: 0,
         parseErrors: graph.parseErrors.length,
       },
     };
@@ -646,9 +688,6 @@ export function computeVisibleGraph(graph: GraphData, filters: FilterState): Gra
   for (const edge of candidateEdges) {
     candidateNodeIds.add(edge.source);
     candidateNodeIds.add(edge.target);
-  }
-  for (const queryKeyId of allQueryKeyIds) {
-    candidateNodeIds.add(queryKeyId);
   }
 
   let scopedNodes = graph.nodes.filter((node) => candidateNodeIds.has(node.id));

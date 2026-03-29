@@ -13,7 +13,7 @@ export function ProjectDividerNode({ data }: NodeProps) {
     return (
       <div
         className="pointer-events-none relative overflow-visible rounded-[28px] border-2 border-dashed border-zinc-500/60 bg-zinc-300/6 dark:border-zinc-400/50 dark:bg-zinc-800/10"
-        style={{ width: Math.max(480, width), height: Math.max(140, height) }}
+        style={{ width: Math.max(360, width), height: Math.max(140, height) }}
       >
         {showLabel ? (
           <span className="absolute top-4 left-5 rounded bg-zinc-100/96 px-4 py-1.5 text-[18px] leading-none tracking-[0.03em] text-zinc-800 shadow-[0_4px_12px_rgba(24,24,27,0.18)] dark:bg-zinc-900/96 dark:text-zinc-200 dark:shadow-[0_4px_12px_rgba(0,0,0,0.45)]">

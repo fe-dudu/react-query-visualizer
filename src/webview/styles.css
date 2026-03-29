@@ -14,7 +14,8 @@
   --rqv-controls-button-hover-bg: #d4d4d8;
   --rqv-controls-button-hover-fg: #09090b;
   --rqv-minimap-node: #52525b;
-  --rqv-minimap-mask: rgba(161, 161, 170, 0.22);
+  --rqv-minimap-mask: rgba(161, 161, 170, 0.3);
+  --rqv-minimap-mask-stroke: rgba(39, 39, 42, 0.9);
   --rqv-minimap-bg: rgba(250, 250, 250, 0.94);
   --rqv-minimap-border: rgba(161, 161, 170, 0.45);
   --rqv-minimap-shadow: rgba(24, 24, 27, 0.14);
@@ -32,7 +33,8 @@
   --rqv-controls-button-hover-bg: #52525b;
   --rqv-controls-button-hover-fg: #fafafa;
   --rqv-minimap-node: #a1a1aa;
-  --rqv-minimap-mask: rgba(24, 24, 27, 0.46);
+  --rqv-minimap-mask: rgba(24, 24, 27, 0.58);
+  --rqv-minimap-mask-stroke: rgba(244, 244, 245, 0.92);
   --rqv-minimap-bg: rgba(24, 24, 27, 0.78);
   --rqv-minimap-border: rgba(161, 161, 170, 0.55);
   --rqv-minimap-shadow: rgba(24, 24, 27, 0.4);

@@ -1,6 +1,13 @@
 import { type Dispatch, type ReactElement, type SetStateAction, useEffect, useMemo, useState } from 'react';
 
 import { OPERATION_RELATIONS, RELATION_COLOR, RELATION_LABEL } from '../constants';
+import {
+  applyFilterDraft,
+  buildFilterDraft,
+  hasPendingFilterChanges,
+  hasPendingOperationChanges,
+  hasPendingTextFilterChanges,
+} from '../filterDraft';
 import type { OperationRelation, ScannedFile } from '../model';
 import { cx } from '../utils';
 import type { FilterState } from '../viewTypes';
@@ -151,6 +158,9 @@ export function LeftPanel({
     relatedFiles: false,
   });
   const [collapsedDirectories, setCollapsedDirectories] = useState<Set<string>>(() => new Set());
+  const [draftFilters, setDraftFilters] = useState(() => buildFilterDraft(filters));
+  const [draftVerticalSpacing, setDraftVerticalSpacing] = useState(verticalSpacing);
+  const [draftHorizontalSpacing, setDraftHorizontalSpacing] = useState(horizontalSpacing);
 
   const filteredRelatedFiles = useMemo(() => {
     const unique = new Map<string, ScannedFile>();
@@ -184,8 +194,24 @@ export function LeftPanel({
     });
   }, [directoryPaths]);
 
+  useEffect(() => {
+    setDraftFilters({
+      relation: { ...filters.relation },
+      fileQuery: filters.fileQuery,
+      search: filters.search,
+    });
+  }, [filters.relation, filters.fileQuery, filters.search]);
+
+  useEffect(() => {
+    setDraftVerticalSpacing(verticalSpacing);
+  }, [verticalSpacing]);
+
+  useEffect(() => {
+    setDraftHorizontalSpacing(horizontalSpacing);
+  }, [horizontalSpacing]);
+
   const toggleRelation = (relation: OperationRelation) => {
-    setFilters((prev) => ({
+    setDraftFilters((prev) => ({
       ...prev,
       relation: {
         ...prev.relation,
@@ -211,6 +237,29 @@ export function LeftPanel({
       }
       return next;
     });
+  };
+
+  const applyDraftFilters = () => {
+    if (!hasPendingFilterChanges(filters, draftFilters)) {
+      return;
+    }
+
+    setFilters((previous) => applyFilterDraft(previous, draftFilters));
+  };
+
+  const hasPendingOperations = hasPendingOperationChanges(filters, draftFilters);
+  const hasPendingTextFilters = hasPendingTextFilterChanges(filters, draftFilters);
+
+  const hasPendingLayoutChanges =
+    draftVerticalSpacing !== verticalSpacing || draftHorizontalSpacing !== horizontalSpacing;
+
+  const applyDraftLayout = () => {
+    if (!hasPendingLayoutChanges) {
+      return;
+    }
+
+    onVerticalSpacingChange(draftVerticalSpacing);
+    onHorizontalSpacingChange(draftHorizontalSpacing);
   };
 
   const sectionHeader = (title: string, section: PanelSectionKey, extra?: string) => {
@@ -369,7 +418,11 @@ export function LeftPanel({
                 key={relation}
                 className="my-1 flex items-center gap-2 rounded px-1 py-0.5 text-xs hover:bg-zinc-200/70 dark:hover:bg-zinc-800/70"
               >
-                <input type="checkbox" checked={filters.relation[relation]} onChange={() => toggleRelation(relation)} />
+                <input
+                  type="checkbox"
+                  checked={draftFilters.relation[relation]}
+                  onChange={() => toggleRelation(relation)}
+                />
                 <span
                   aria-hidden
                   className="h-[3px] w-4 shrink-0 rounded-full"
@@ -377,13 +430,30 @@ export function LeftPanel({
                 />
                 <span
                   className={
-                    filters.relation[relation] ? 'text-zinc-800 dark:text-zinc-100' : 'text-zinc-500 dark:text-zinc-400'
+                    draftFilters.relation[relation]
+                      ? 'text-zinc-800 dark:text-zinc-100'
+                      : 'text-zinc-500 dark:text-zinc-400'
                   }
                 >
                   {RELATION_LABEL[relation]}
                 </span>
               </label>
-            ))
+            )).concat(
+              <button
+                key="apply-operations"
+                type="button"
+                className={cx(
+                  'mt-2 w-full rounded-[7px] border px-2 py-[7px] text-[12px] font-medium transition-colors',
+                  hasPendingOperations
+                    ? 'border-zinc-500 bg-zinc-900 text-zinc-100 hover:bg-zinc-800 dark:border-zinc-300 dark:bg-zinc-100 dark:text-zinc-900 dark:hover:bg-zinc-200'
+                    : 'cursor-not-allowed border-zinc-300 bg-zinc-200/80 text-zinc-500 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-500',
+                )}
+                onClick={applyDraftFilters}
+                disabled={!hasPendingOperations}
+              >
+                Apply Operations
+              </button>,
+            )
           : null}
       </section>
 
@@ -393,16 +463,39 @@ export function LeftPanel({
           <>
             <input
               className="mb-2 w-full rounded-[7px] border border-zinc-300 bg-zinc-100 px-2 py-[7px] text-[12px] text-zinc-700 placeholder:text-zinc-500 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-200 dark:placeholder:text-zinc-500"
-              value={filters.fileQuery}
+              value={draftFilters.fileQuery}
               placeholder="Filter files"
-              onChange={(event) => setFilters((prev) => ({ ...prev, fileQuery: event.target.value }))}
+              onChange={(event) => setDraftFilters((previous) => ({ ...previous, fileQuery: event.target.value }))}
+              onKeyDown={(event) => {
+                if (event.key === 'Enter') {
+                  applyDraftFilters();
+                }
+              }}
             />
             <input
               className="mb-2 w-full rounded-[7px] border border-zinc-300 bg-zinc-100 px-2 py-[7px] text-[12px] text-zinc-700 placeholder:text-zinc-500 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-200 dark:placeholder:text-zinc-500"
-              value={filters.search}
+              value={draftFilters.search}
               placeholder="Search labels"
-              onChange={(event) => setFilters((prev) => ({ ...prev, search: event.target.value }))}
+              onChange={(event) => setDraftFilters((previous) => ({ ...previous, search: event.target.value }))}
+              onKeyDown={(event) => {
+                if (event.key === 'Enter') {
+                  applyDraftFilters();
+                }
+              }}
             />
+            <button
+              type="button"
+              className={cx(
+                'w-full rounded-[7px] border px-2 py-[7px] text-[12px] font-medium transition-colors',
+                hasPendingTextFilters
+                  ? 'border-zinc-500 bg-zinc-900 text-zinc-100 hover:bg-zinc-800 dark:border-zinc-300 dark:bg-zinc-100 dark:text-zinc-900 dark:hover:bg-zinc-200'
+                  : 'cursor-not-allowed border-zinc-300 bg-zinc-200/80 text-zinc-500 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-500',
+              )}
+              onClick={applyDraftFilters}
+              disabled={!hasPendingTextFilters}
+            >
+              Apply Filters
+            </button>
           </>
         ) : null}
       </section>
@@ -410,14 +503,16 @@ export function LeftPanel({
       <section className="mb-4 shrink-0 border-b border-zinc-300/75 pb-[10px] dark:border-zinc-700/70">
         {sectionHeader('Layout', 'layout')}
         {!collapsedSections.layout ? (
-          <div className="space-y-2 rounded-[7px] border border-zinc-300 px-2 py-1.5 dark:border-zinc-700">
+          <div className="space-y-2 px-2 py-1.5">
             <div>
               <label
                 className="mb-0.5 flex items-center justify-between text-[11px] text-zinc-600 dark:text-zinc-300"
                 htmlFor="rqv-vertical-spacing"
               >
                 <span>Vertical Spacing</span>
-                <span className="font-medium tabular-nums text-zinc-800 dark:text-zinc-100">{verticalSpacing}</span>
+                <span className="font-medium tabular-nums text-zinc-800 dark:text-zinc-100">
+                  {draftVerticalSpacing}
+                </span>
               </label>
               <input
                 id="rqv-vertical-spacing"
@@ -425,8 +520,8 @@ export function LeftPanel({
                 min={0}
                 max={300}
                 step={2}
-                value={verticalSpacing}
-                onChange={(event) => onVerticalSpacingChange(Number(event.target.value))}
+                value={draftVerticalSpacing}
+                onChange={(event) => setDraftVerticalSpacing(Number(event.target.value))}
                 className="h-1.5 w-full cursor-pointer accent-zinc-700 dark:accent-zinc-300"
               />
             </div>
@@ -437,7 +532,9 @@ export function LeftPanel({
                 htmlFor="rqv-horizontal-spacing"
               >
                 <span>Horizontal Spacing</span>
-                <span className="font-medium tabular-nums text-zinc-800 dark:text-zinc-100">{horizontalSpacing}</span>
+                <span className="font-medium tabular-nums text-zinc-800 dark:text-zinc-100">
+                  {draftHorizontalSpacing}
+                </span>
               </label>
               <input
                 id="rqv-horizontal-spacing"
@@ -445,11 +542,25 @@ export function LeftPanel({
                 min={100}
                 max={3000}
                 step={25}
-                value={horizontalSpacing}
-                onChange={(event) => onHorizontalSpacingChange(Number(event.target.value))}
+                value={draftHorizontalSpacing}
+                onChange={(event) => setDraftHorizontalSpacing(Number(event.target.value))}
                 className="h-1.5 w-full cursor-pointer accent-zinc-700 dark:accent-zinc-300"
               />
             </div>
+
+            <button
+              type="button"
+              className={cx(
+                'w-full rounded-[7px] border px-2 py-[7px] text-[12px] font-medium transition-colors',
+                hasPendingLayoutChanges
+                  ? 'border-zinc-500 bg-zinc-900 text-zinc-100 hover:bg-zinc-800 dark:border-zinc-300 dark:bg-zinc-100 dark:text-zinc-900 dark:hover:bg-zinc-200'
+                  : 'cursor-not-allowed border-zinc-300 bg-zinc-200/80 text-zinc-500 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-500',
+              )}
+              onClick={applyDraftLayout}
+              disabled={!hasPendingLayoutChanges}
+            >
+              Apply Layout
+            </button>
           </div>
         ) : null}
       </section>

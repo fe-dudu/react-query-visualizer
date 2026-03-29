@@ -31,12 +31,13 @@ import {
 } from './graphUtils';
 import { useResizablePanels } from './hooks/useResizablePanels';
 import { getLayoutedElements } from './layout';
+import { computeProjectBubbleFrame, computeProjectGridShifts } from './projectLayout';
 import { cx, isDeclareActionNode } from './utils';
 import { vscode } from './vscode';
 
 const defaultFilters: FilterState = {
   relation: {
-    invalidates: true,
+    invalidates: false,
     refetches: false,
     cancels: false,
     resets: false,
@@ -229,6 +230,8 @@ const PROJECT_TOP_DIVIDER_GAP = 42;
 const PROJECT_BAND_GAP = 8;
 const FILE_ACTION_PROJECT_GAP = 48;
 const PROJECT_COLUMN_GAP = 168;
+const MONOREPO_PROJECT_ROW_GAP = 96;
+const MONOREPO_PROJECT_MAX_COLUMNS = 4;
 const DECLARE_ACTION_QUERY_GAP = 56;
 const PROJECT_DIVIDER_TOP_MARGIN = 23;
 const PROJECT_DIVIDER_BOTTOM_MARGIN = 11;
@@ -439,28 +442,21 @@ function buildProjectDividerNodes(
       if (!keepFirstDivider && index === 0) {
         continue;
       }
-
-      const horizontalPadding = 72;
-      const topPadding = 82;
-      const bottomPadding = 52;
-      const bubbleX = range.minX - horizontalPadding;
-      const bubbleY = range.minY - topPadding;
-      const bubbleWidth = Math.max(860, range.maxX - range.minX + horizontalPadding * 2);
-      const bubbleHeight = Math.max(260, range.maxY - range.minY + topPadding + bottomPadding);
+      const bubbleFrame = computeProjectBubbleFrame(range);
 
       dividers.push({
         id: `divider:${index}:${range.label}`,
         type: 'rqvDivider',
         data: {
           label: range.label,
-          width: bubbleWidth,
-          height: bubbleHeight,
+          width: bubbleFrame.width,
+          height: bubbleFrame.height,
           showLabel: true,
           variant: 'bubble',
         },
         position: {
-          x: bubbleX,
-          y: bubbleY,
+          x: bubbleFrame.x,
+          y: bubbleFrame.y,
         },
         selectable: false,
         draggable: false,
@@ -468,8 +464,8 @@ function buildProjectDividerNodes(
         deletable: false,
         focusable: false,
         style: {
-          width: bubbleWidth,
-          height: bubbleHeight,
+          width: bubbleFrame.width,
+          height: bubbleFrame.height,
           zIndex: 0,
           pointerEvents: 'none',
         },
@@ -1158,50 +1154,29 @@ function arrangeProjectsHorizontally(nodes: Node[], graph: WebviewPayload['graph
     return nodes;
   }
 
-  const sortedProjects = [...boundsByProject.entries()]
-    .sort((a, b) => a[1].minX - b[1].minX || a[1].minY - b[1].minY || a[0].localeCompare(b[0]))
-    .map(([project]) => project);
-
-  const topBaseline = sortedProjects.reduce((minY, project) => {
-    const bounds = boundsByProject.get(project);
-    if (!bounds) {
-      return minY;
-    }
-    return Math.min(minY, bounds.minY);
-  }, Number.POSITIVE_INFINITY);
-
-  if (!Number.isFinite(topBaseline)) {
-    return nodes;
-  }
-
-  let cursorX = sortedProjects.reduce((minX, project) => {
-    const bounds = boundsByProject.get(project);
-    if (!bounds) {
-      return minX;
-    }
-    return Math.min(minX, bounds.minX);
-  }, Number.POSITIVE_INFINITY);
-
-  if (!Number.isFinite(cursorX)) {
-    return nodes;
-  }
-
   const shiftByNodeId = new Map<string, { x: number; y: number }>();
-  for (const project of sortedProjects) {
-    const bounds = boundsByProject.get(project);
+  const projectShifts = computeProjectGridShifts(
+    [...boundsByProject.entries()].map(([project, bounds]) => ({
+      project,
+      minX: bounds.minX,
+      maxX: bounds.maxX,
+      minY: bounds.minY,
+      maxY: bounds.maxY,
+    })),
+    {
+      columnGap: PROJECT_COLUMN_GAP,
+      rowGap: MONOREPO_PROJECT_ROW_GAP,
+      maxColumns: MONOREPO_PROJECT_MAX_COLUMNS,
+    },
+  );
+  for (const [project, shift] of projectShifts.entries()) {
     const nodeIds = nodeIdsByProject.get(project);
-    if (!bounds || !nodeIds || nodeIds.length === 0) {
+    if (!nodeIds || nodeIds.length === 0) {
       continue;
     }
-
-    const shiftX = cursorX - bounds.minX;
-    const shiftY = topBaseline - bounds.minY;
     for (const nodeId of nodeIds) {
-      shiftByNodeId.set(nodeId, { x: shiftX, y: shiftY });
+      shiftByNodeId.set(nodeId, shift);
     }
-
-    const width = Math.max(0, bounds.maxX - bounds.minX);
-    cursorX += width + PROJECT_COLUMN_GAP;
   }
 
   if (shiftByNodeId.size === 0) {
@@ -2141,14 +2116,16 @@ export function GraphCanvas({ payload }: { payload: WebviewPayload }) {
             nodeColor="var(--rqv-minimap-node)"
             maskColor="var(--rqv-minimap-mask)"
             style={{
-              width: 132,
-              height: 88,
+              width: 198,
+              height: 132,
               background: 'var(--rqv-minimap-bg)',
               border: '1px solid var(--rqv-minimap-border)',
               borderRadius: 10,
               boxShadow: '0 8px 20px var(--rqv-minimap-shadow)',
               marginRight: 10,
               marginBottom: 10,
+              ['--xy-minimap-mask-stroke-color' as string]: 'var(--rqv-minimap-mask-stroke)',
+              ['--xy-minimap-mask-stroke-width' as string]: 2.5,
             }}
           />
           <Background variant={BackgroundVariant.Lines} gap={44} size={0.48} color="var(--rqv-grid-color)" />
