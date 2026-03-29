@@ -1,5 +1,11 @@
 # react-query-visualizer
 
+## 0.0.4
+
+### Patch Changes
+
+- [`c2c9244`](https://github.com/fe-dudu/react-query-visualizer/commit/c2c9244dad0eab39693049527642526321410165) Thanks [@fe-dudu](https://github.com/fe-dudu)! - Improve graph accuracy and inspection UX
+
 ## 0.0.3
 
 ### Patch Changes
