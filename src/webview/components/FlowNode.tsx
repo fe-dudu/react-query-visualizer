@@ -7,9 +7,9 @@ import {
   SHARED_SOURCE_HANDLE_ID,
   SHARED_TARGET_HANDLE_ID,
   type VisualNodeKind,
-} from '../constants';
-import { cx, isDeclareActionNode } from '../utils';
-import type { FlowNodeData } from '../viewTypes';
+} from '../utils/constants';
+import { cx, isDeclareActionNode } from '../utils/utils';
+import type { FlowNodeData } from '../types/viewTypes';
 
 const NODE_KIND_LABEL = {
   file: 'File',
