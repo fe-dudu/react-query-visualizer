@@ -108,13 +108,16 @@ export class GraphPanel {
   private renderHtml(): string {
     const webview = this.panel.webview;
     const scriptUri = webview.asWebviewUri(vscode.Uri.joinPath(this.extensionUri, 'dist', 'webview.js'));
+    const layoutWorkerUri = webview.asWebviewUri(vscode.Uri.joinPath(this.extensionUri, 'dist', 'layoutWorker.js'));
     const cssUri = webview.asWebviewUri(vscode.Uri.joinPath(this.extensionUri, 'dist', 'webview.css'));
     const cspNonce = nonce();
     const csp = [
       "default-src 'none'",
+      `connect-src ${webview.cspSource}`,
       `img-src ${webview.cspSource} https: data:`,
       `style-src ${webview.cspSource} 'unsafe-inline'`,
       `script-src 'nonce-${cspNonce}'`,
+      'worker-src blob:',
     ].join('; ');
 
     return `<!DOCTYPE html>
@@ -128,6 +131,7 @@ export class GraphPanel {
   </head>
   <body>
     <div id="root"></div>
+    <script nonce="${cspNonce}">window.__RQV_LAYOUT_WORKER_URI__ = "${layoutWorkerUri}";</script>
     <script nonce="${cspNonce}" src="${scriptUri}"></script>
   </body>
 </html>`;

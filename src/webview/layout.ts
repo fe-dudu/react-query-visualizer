@@ -1,4 +1,4 @@
-import { type Edge, type Node, Position } from '@xyflow/react';
+import type { Edge, Node, Position } from '@xyflow/react';
 import dagre from 'dagre';
 
 import type { FlowNodeData } from './viewTypes';
@@ -14,6 +14,8 @@ const NODE_MIN_HEIGHT = 173;
 const PRIMARY_ROW_HEIGHT = 188;
 const TITLE_CHARS_PER_LINE = 24;
 const SUBTITLE_CHARS_PER_LINE = 32;
+const SOURCE_POSITION = 'right' as Position;
+const TARGET_POSITION = 'left' as Position;
 
 function estimateWrappedLineCount(text: string, charsPerLine: number): number {
   if (!text) {
@@ -107,8 +109,8 @@ export function getLayoutedElements(
       ...node,
       width: size.width,
       height: size.height,
-      sourcePosition: Position.Right,
-      targetPosition: Position.Left,
+      sourcePosition: SOURCE_POSITION,
+      targetPosition: TARGET_POSITION,
       position: {
         x: positioned.x - size.width / 2,
         y: positioned.y - size.height / 2,
