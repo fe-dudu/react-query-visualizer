@@ -2,18 +2,18 @@ import { type Dispatch, type SetStateAction, useEffect, useMemo, useState } from
 
 import { LeftPanelQueryKeys } from './LeftPanelQueryKeys';
 import { LeftPanelRelatedFiles } from './LeftPanelRelatedFiles';
-import { buildFileTree, collectDirectoryPaths } from './leftPanelTree';
-import { OPERATION_RELATIONS, RELATION_COLOR, RELATION_LABEL } from '../constants';
+import { buildFileTree, collectDirectoryPaths } from '../utils/leftPanelTree';
+import { OPERATION_RELATIONS, RELATION_COLOR, RELATION_LABEL } from '../utils/constants';
 import {
   applyFilterDraft,
   buildFilterDraft,
   hasPendingFilterChanges,
   hasPendingOperationChanges,
   hasPendingTextFilterChanges,
-} from '../filterDraft';
-import type { OperationRelation, ScannedFile } from '../model';
-import { cx } from '../utils';
-import type { FilterState } from '../viewTypes';
+} from '../utils/filterDraft';
+import type { OperationRelation, ScannedFile } from '../types/model';
+import { cx } from '../utils/utils';
+import type { FilterState } from '../types/viewTypes';
 
 interface LeftPanelProps {
   filters: FilterState;

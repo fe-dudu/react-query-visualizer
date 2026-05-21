@@ -1,6 +1,6 @@
 import type { Edge, Node } from '@xyflow/react';
 
-import { getLayoutedElements, type LayoutOptions } from './layout';
+import { type LayoutOptions, getLayoutedElements } from './layout/layout';
 
 interface LayoutWorkerRequest {
   type: 'layout';

@@ -6,8 +6,8 @@ import {
   collectDirectoryPaths,
   directoryImpact,
   displayFileName,
-} from './leftPanelTree';
-import type { ScannedFile } from '../model';
+} from '../utils/leftPanelTree';
+import type { ScannedFile } from '../types/model';
 
 interface LeftPanelRelatedFilesProps {
   relatedFiles: ScannedFile[];

@@ -1,6 +1,6 @@
 import type { NodeProps } from '@xyflow/react';
 
-import type { DividerNodeData } from '../viewTypes';
+import type { DividerNodeData } from '../types/viewTypes';
 
 export function ProjectDividerNode({ data }: NodeProps) {
   const dividerData = data as DividerNodeData;
