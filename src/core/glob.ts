@@ -1,6 +1,6 @@
 export const DEFAULT_INCLUDE = '**/*.{ts,tsx,js,jsx,mts,cts,mjs,cjs}';
 export const DEFAULT_EXCLUDE =
-  '**/{node_modules,dist,build,.next,coverage,.expo,.expo-shared,.turbo,.yarn,android,ios,Pods}/**';
+  '**/{.git,.idea,.vscode,.cache,.next,.nuxt,.svelte-kit,.turbo,.expo,.expo-shared,.omc,.omx,.pnpm-store,.yarn,.parcel-cache,node_modules,dist,build,coverage,out,release,android,ios,Pods,bin,obj,temp,tmp,storybook-static}/**';
 
 export function parseGlobPatterns(input: string): string[] {
   const results: string[] = [];
