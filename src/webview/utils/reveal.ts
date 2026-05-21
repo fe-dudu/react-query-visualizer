@@ -1,6 +1,6 @@
+import { vscode } from './vscode';
 import type { GraphNode } from '../types/model';
 import type { NodeCallsite, NodeFileRef } from '../types/viewTypes';
-import { vscode } from './vscode';
 
 export function revealNodeInCode(node: GraphNode): void {
   if (!node.file) {

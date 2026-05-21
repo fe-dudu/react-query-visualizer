@@ -1,5 +1,6 @@
 import type { ReactElement } from 'react';
 
+import type { ScannedFile } from '../types/model';
 import {
   type FileTreeDirectory,
   buildFileTree,
@@ -7,7 +8,6 @@ import {
   directoryImpact,
   displayFileName,
 } from '../utils/leftPanelTree';
-import type { ScannedFile } from '../types/model';
 
 interface LeftPanelRelatedFilesProps {
   relatedFiles: ScannedFile[];

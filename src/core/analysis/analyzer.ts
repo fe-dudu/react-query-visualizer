@@ -1,13 +1,13 @@
 import type * as t from '@babel/types';
 import { promises as fs } from 'node:fs';
 
+import { scanCalls, scanImports, scanLocalBindings } from './astScan';
 import { createParseContext } from './context';
 import { createQueryKeyResolver, resetResolverCache } from './resolver';
-import { scanCalls, scanImports, scanLocalBindings } from './astScan';
 import { parseSource } from './sourceParser';
 import { buildSymbolIndex, normalizeAnalyzerPath } from './symbols';
-import { collectFiles as collectFilesInternal } from '../workspace/fileCollection';
 import type { AnalysisResult, QueryRecord, ScanScope } from '../../shared/types';
+import { collectFiles as collectFilesInternal } from '../workspace/fileCollection';
 
 async function parseFiles(files: string[]): Promise<{
   parsedAsts: Map<string, t.File>;

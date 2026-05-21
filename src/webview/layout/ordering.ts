@@ -1,8 +1,8 @@
 import type { Node } from '@xyflow/react';
 
 import { getGraphLayoutIndex } from './layoutIndex';
-import { parseProjectScope, projectLabelFromScope } from '../utils/projectScope';
 import type { GraphNode, WebviewPayload } from '../types/model';
+import { parseProjectScope, projectLabelFromScope } from '../utils/projectScope';
 import { isDeclareActionNode } from '../utils/utils';
 export function isMonorepoGraph(graph: WebviewPayload['graph']): boolean {
   const packageScopedProjects = new Set<string>();

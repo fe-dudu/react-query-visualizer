@@ -2,8 +2,8 @@ import { promises as fs } from 'node:fs';
 import * as path from 'node:path';
 import fg from 'fast-glob';
 
-import type { ScanScope } from '../../shared/types';
 import { parseGlobPatterns } from './glob';
+import type { ScanScope } from '../../shared/types';
 
 function normalizeFolderInput(input: string): string {
   if (!input || input === '.') {

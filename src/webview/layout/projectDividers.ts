@@ -1,6 +1,7 @@
 import type { Node } from '@xyflow/react';
 
 import { getGraphLayoutIndex, projectLabelForLayoutNode } from './layoutIndex';
+import { computeProjectBubbleFrame } from './projectLayout';
 import {
   DEFAULT_NODE_HEIGHT,
   PROJECT_BAND_GAP,
@@ -10,7 +11,6 @@ import {
   PROJECT_TOP_DIVIDER_GAP,
 } from './spacing';
 import type { WebviewPayload } from '../types/model';
-import { computeProjectBubbleFrame } from './projectLayout';
 import { isDeclareActionNode } from '../utils/utils';
 
 interface ProjectRange {

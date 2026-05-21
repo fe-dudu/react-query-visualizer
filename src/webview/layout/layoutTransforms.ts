@@ -1,6 +1,5 @@
 import type { Node } from '@xyflow/react';
 
-import { alignFileActionGroups as alignFileActionGroupsImpl } from '../utils/fileActionGroups';
 import { orderNodesForLayout as orderNodesForLayoutImpl } from './layoutOrdering';
 import {
   arrangeProjectsHorizontally as arrangeProjectsHorizontallyImpl,
@@ -13,6 +12,7 @@ import {
   alignQueryNodesToRightColumn as alignQueryNodesToRightColumnImpl,
 } from './queryAlignment';
 import type { WebviewPayload } from '../types/model';
+import { alignFileActionGroups as alignFileActionGroupsImpl } from '../utils/fileActionGroups';
 
 export function isMonorepoGraph(graph: WebviewPayload['graph']): boolean {
   return isMonorepoGraphImpl(graph);

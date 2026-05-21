@@ -1,6 +1,6 @@
 import type { GraphNode } from '../types/model';
-import { isDeclareActionNode, nodeFileDisplay } from '../utils/utils';
 import type { NodeCallsite, NodeExplanation, NodeFileRef } from '../types/viewTypes';
+import { isDeclareActionNode, nodeFileDisplay } from '../utils/utils';
 
 interface RightPanelProps {
   selectedNode: GraphNode | null;

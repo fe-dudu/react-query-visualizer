@@ -1,15 +1,15 @@
 import * as path from 'node:path';
 import * as vscode from 'vscode';
 
-import { getWorkspaceFolders, scopeForWorkspace } from '../workspace/folders';
-import type { RqvActivityViewProvider } from '../views/activityView';
 import { runStaticAnalysis } from '../../core/analysis/analyzer';
-import { getLayoutConfig, persistScanScope } from '../../core/workspace/config';
 import { buildGraph } from '../../core/graph/buildGraph';
 import type { GraphRoot } from '../../core/graph/graphBuilderTypes';
+import { getLayoutConfig, persistScanScope } from '../../core/workspace/config';
 import { scopeToLabel } from '../../core/workspace/scope';
-import { GraphPanel } from '../views/graphPanel';
 import type { AnalysisResult, GraphData, ScanScope, ScannedFile, WebviewPayload } from '../../shared/types';
+import type { RqvActivityViewProvider } from '../views/activityView';
+import { GraphPanel } from '../views/graphPanel';
+import { getWorkspaceFolders, scopeForWorkspace } from '../workspace/folders';
 
 export interface ScanRunResult {
   payload: WebviewPayload;

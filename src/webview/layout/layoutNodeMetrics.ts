@@ -1,7 +1,7 @@
 import type { Node } from '@xyflow/react';
 
-import { projectLabelFromScope } from '../utils/projectScope';
 import type { GraphNode } from '../types/model';
+import { projectLabelFromScope } from '../utils/projectScope';
 import { isDeclareActionNode } from '../utils/utils';
 
 export function projectKeyForNode(graphNode: GraphNode | undefined, queryProjectById: Map<string, string>): string {

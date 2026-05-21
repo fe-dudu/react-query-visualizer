@@ -1,8 +1,8 @@
 import { BaseEdge, type EdgeProps } from '@xyflow/react';
 
-import { RELATION_COLOR } from '../utils/constants';
 import type { GraphRelation } from '../types/model';
 import type { FlowEdgeData } from '../types/viewTypes';
+import { RELATION_COLOR } from '../utils/constants';
 
 const EDGE_BASE_OFFSET = 36;
 const MAX_LANE_OFFSET = 520;

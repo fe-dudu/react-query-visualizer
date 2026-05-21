@@ -36,6 +36,7 @@
     "watch:webview": "pnpm run build:webview:bundle -- --watch"
   },
   "dependencies": {
+    "@babel/types": "^7.29.0",
     "@swc/core": "^1.15.33",
     "@swc/wasm": "^1.15.33",
     "@xyflow/react": "^12.10.0",
