@@ -165,7 +165,7 @@
         },
         "rqv.scope.exclude": {
           "type": "string",
-          "default": "**/{node_modules,dist,build,.next,coverage,.expo,.expo-shared,.turbo,.yarn,android,ios,Pods}/**",
+          "default": "**/{.git,.idea,.vscode,.cache,.next,.nuxt,.svelte-kit,.turbo,.expo,.expo-shared,.omc,.omx,.pnpm-store,.yarn,.parcel-cache,node_modules,dist,build,coverage,out,release,android,ios,Pods,bin,obj,temp,tmp,storybook-static}/**",
           "description": "Comma-separated exclude glob patterns."
         },
         "rqv.scan.maxFileSizeKB": {
