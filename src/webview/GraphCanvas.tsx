@@ -13,7 +13,7 @@ import {
   useNodesState,
   useReactFlow,
 } from '@xyflow/react';
-import { type SetStateAction, useEffect, useMemo, useRef, useState } from 'react';
+import { type SetStateAction, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
 import type { GraphNode, ScannedFile, WebviewPayload } from './model';
 import type { FilterState, FlowEdgeData, NodeCallsite, NodeFileRef } from './viewTypes';
@@ -30,7 +30,7 @@ import {
   computeVisibleGraph,
 } from './graphUtils';
 import { useResizablePanels } from './hooks/useResizablePanels';
-import { getLayoutedElements } from './layout';
+import { getLayoutedElements, type LayoutOptions } from './layout';
 import { computeProjectBubbleFrame, computeProjectGridShifts } from './projectLayout';
 import { cx, isDeclareActionNode } from './utils';
 import { vscode } from './vscode';
@@ -230,6 +230,38 @@ interface GraphLayoutIndex {
   queryProjectById: Map<string, string>;
   queryCallsiteImpactById: Map<string, number>;
   projectCount: number;
+}
+
+type LayoutWorkerRequest = {
+  type: 'layout';
+  id: number;
+  nodes: Node[];
+  edges: Edge[];
+  options: LayoutOptions;
+};
+
+type LayoutWorkerResponse =
+  | {
+      type: 'layouted';
+      id: number;
+      nodes: Node[];
+      edges: Edge[];
+    }
+  | {
+      type: 'layout-error';
+      id: number;
+      message: string;
+    };
+
+type LayoutWorkerCallback = {
+  resolve: (value: { nodes: Node[]; edges: Edge[] }) => void;
+  reject: (reason: Error) => void;
+};
+
+declare global {
+  interface Window {
+    __RQV_LAYOUT_WORKER_URI__?: string;
+  }
 }
 
 const DEFAULT_NODE_HEIGHT = 173;
@@ -1729,6 +1761,120 @@ function buildSelectedTrail(
   return { highlightedNodeIds, highlightedEdgeIds };
 }
 
+function useDagreLayoutWorker(): (
+  nodes: Node[],
+  edges: Edge[],
+  options: LayoutOptions,
+) => Promise<{ nodes: Node[]; edges: Edge[] }> {
+  const workerRef = useRef<Worker | null>(null);
+  const workerBlobUrlRef = useRef<string | null>(null);
+  const requestIdRef = useRef(0);
+  const callbacksRef = useRef<Map<number, LayoutWorkerCallback>>(new Map());
+
+  const rejectPending = useCallback((error: Error) => {
+    for (const callback of callbacksRef.current.values()) {
+      callback.reject(error);
+    }
+    callbacksRef.current.clear();
+  }, []);
+
+  const getWorker = useCallback(async (): Promise<Worker | null> => {
+    if (workerRef.current) {
+      return workerRef.current;
+    }
+
+    const workerUri = window.__RQV_LAYOUT_WORKER_URI__;
+    if (!workerUri) {
+      return null;
+    }
+
+    try {
+      const response = await fetch(workerUri);
+      if (!response.ok) {
+        return null;
+      }
+
+      const workerBlob = await response.blob();
+      const workerBlobUrl = URL.createObjectURL(workerBlob);
+      const worker = new Worker(workerBlobUrl);
+      worker.onmessage = (event: MessageEvent<LayoutWorkerResponse>) => {
+        const message = event.data;
+        const callback = callbacksRef.current.get(message.id);
+        if (!callback) {
+          return;
+        }
+
+        callbacksRef.current.delete(message.id);
+        if (message.type === 'layouted') {
+          callback.resolve({ nodes: message.nodes, edges: message.edges });
+          return;
+        }
+
+        callback.reject(new Error(message.message));
+      };
+      worker.onerror = (event) => {
+        const error = new Error(event.message || 'Dagre layout worker failed');
+        rejectPending(error);
+        worker.terminate();
+        if (workerRef.current === worker) {
+          workerRef.current = null;
+        }
+        if (workerBlobUrlRef.current === workerBlobUrl) {
+          URL.revokeObjectURL(workerBlobUrl);
+          workerBlobUrlRef.current = null;
+        }
+      };
+      workerBlobUrlRef.current = workerBlobUrl;
+      workerRef.current = worker;
+      return worker;
+    } catch {
+      return null;
+    }
+  }, [rejectPending]);
+
+  useEffect(() => {
+    return () => {
+      rejectPending(new Error('Dagre layout worker was disposed'));
+      workerRef.current?.terminate();
+      workerRef.current = null;
+      if (workerBlobUrlRef.current) {
+        URL.revokeObjectURL(workerBlobUrlRef.current);
+        workerBlobUrlRef.current = null;
+      }
+    };
+  }, [rejectPending]);
+
+  return useCallback(
+    async (nodes: Node[], edges: Edge[], options: LayoutOptions) => {
+      const worker = await getWorker();
+      if (!worker) {
+        return getLayoutedElements(nodes, edges, options);
+      }
+
+      return new Promise<{ nodes: Node[]; edges: Edge[] }>((resolve, reject) => {
+        requestIdRef.current += 1;
+        const id = requestIdRef.current;
+        callbacksRef.current.set(id, { resolve, reject });
+        const message: LayoutWorkerRequest = {
+          type: 'layout',
+          id,
+          nodes,
+          edges,
+          options,
+        };
+
+        try {
+          worker.postMessage(message);
+        } catch (error) {
+          callbacksRef.current.delete(id);
+          reject(error instanceof Error ? error : new Error(String(error)));
+        }
+      });
+    },
+    [getWorker],
+  );
+}
+
 export function GraphCanvas({ payload }: { payload: WebviewPayload }) {
   const [filters, setFilters] = useState<FilterState>(defaultFilters);
   const [selectedId, setSelectedId] = useState<string | null>(null);
@@ -1740,6 +1886,7 @@ export function GraphCanvas({ payload }: { payload: WebviewPayload }) {
   );
 
   const { shellRef, shellStyle, activeResizer, startResize } = useResizablePanels();
+  const runDagreLayout = useDagreLayoutWorker();
 
   const relationFilteredGraph = useMemo(() => computeVisibleGraph(payload.graph, filters), [payload.graph, filters]);
   const searchFilteredGraph = useMemo(
@@ -1853,103 +2000,117 @@ export function GraphCanvas({ payload }: { payload: WebviewPayload }) {
   useEffect(() => {
     let cancelled = false;
     const handle = window.setTimeout(() => {
-      const compactVerticalSpacing = clampVerticalSpacing(verticalSpacing);
-      const wideHorizontalSpacing = clampHorizontalSpacing(horizontalSpacing);
-      const layouted = getLayoutedElements(layoutNodes, layoutFlowGraph.edges, {
-        direction: 'LR',
-        verticalSpacing: compactVerticalSpacing,
-        horizontalSpacing: wideHorizontalSpacing,
-      });
-      const spacedNodes = applyProjectBandSpacing(layouted.nodes, visible, isMultiProject);
-      const groupedNodes = alignFileActionGroups(spacedNodes, visible, compactVerticalSpacing);
-      const topAlignedNodes = alignQueryNodesNearSources(
-        groupedNodes,
-        visible,
-        queryCallsiteImpactById,
-        compactVerticalSpacing,
-      );
-      const rightAlignedQueryNodes = alignQueryNodesToRightColumn(topAlignedNodes, visible, isMonorepo);
-      const leftPlacedDeclareNodes = alignDeclareNodesLeftOfQuery(rightAlignedQueryNodes, visible);
-      const projectPositionedNodes = arrangeProjectsHorizontally(leftPlacedDeclareNodes, visible, isMonorepo);
-      const alignedEdges = applyEdgeGeometryLanes(projectPositionedNodes, layouted.edges);
-      const projectDividers = buildProjectDividerNodes(projectPositionedNodes, visible, isMultiProject, isMonorepo);
-      const currentFlowGraph = latestFlowGraphRef.current;
-      const currentFlowNodeById = new Map(currentFlowGraph.nodes.map((node) => [node.id, node]));
-      const currentFlowEdgeById = new Map(currentFlowGraph.edges.map((edge) => [edge.id, edge]));
-
-      const layoutedNodesWithCurrentVisuals = projectPositionedNodes.map((node) => {
-        const currentNode = currentFlowNodeById.get(node.id);
-        if (!currentNode) {
-          return node;
+      const runLayout = async () => {
+        const compactVerticalSpacing = clampVerticalSpacing(verticalSpacing);
+        const wideHorizontalSpacing = clampHorizontalSpacing(horizontalSpacing);
+        const layoutOptions: LayoutOptions = {
+          direction: 'LR',
+          verticalSpacing: compactVerticalSpacing,
+          horizontalSpacing: wideHorizontalSpacing,
+        };
+        let layouted: { nodes: Node[]; edges: Edge[] };
+        try {
+          layouted = await runDagreLayout(layoutNodes, layoutFlowGraph.edges, layoutOptions);
+        } catch {
+          layouted = getLayoutedElements(layoutNodes, layoutFlowGraph.edges, layoutOptions);
+        }
+        if (cancelled) {
+          return;
         }
 
-        return {
-          ...node,
-          data: currentNode.data,
-          style: {
-            ...node.style,
-            ...currentNode.style,
-          },
-        };
-      });
+        const spacedNodes = applyProjectBandSpacing(layouted.nodes, visible, isMultiProject);
+        const groupedNodes = alignFileActionGroups(spacedNodes, visible, compactVerticalSpacing);
+        const topAlignedNodes = alignQueryNodesNearSources(
+          groupedNodes,
+          visible,
+          queryCallsiteImpactById,
+          compactVerticalSpacing,
+        );
+        const rightAlignedQueryNodes = alignQueryNodesToRightColumn(topAlignedNodes, visible, isMonorepo);
+        const leftPlacedDeclareNodes = alignDeclareNodesLeftOfQuery(rightAlignedQueryNodes, visible);
+        const projectPositionedNodes = arrangeProjectsHorizontally(leftPlacedDeclareNodes, visible, isMonorepo);
+        const alignedEdges = applyEdgeGeometryLanes(projectPositionedNodes, layouted.edges);
+        const projectDividers = buildProjectDividerNodes(projectPositionedNodes, visible, isMultiProject, isMonorepo);
+        const currentFlowGraph = latestFlowGraphRef.current;
+        const currentFlowNodeById = new Map(currentFlowGraph.nodes.map((node) => [node.id, node]));
+        const currentFlowEdgeById = new Map(currentFlowGraph.edges.map((edge) => [edge.id, edge]));
 
-      const alignedEdgesWithCurrentVisuals = alignedEdges.map((edge) => {
-        const currentEdge = currentFlowEdgeById.get(edge.id);
-        if (!currentEdge) {
-          return edge;
-        }
-
-        const alignedData = edge.data as FlowEdgeData | undefined;
-        const currentData = currentEdge.data as FlowEdgeData | undefined;
-
-        return {
-          ...edge,
-          type: currentEdge.type,
-          sourceHandle: currentEdge.sourceHandle,
-          targetHandle: currentEdge.targetHandle,
-          data: {
-            relation: currentData?.relation ?? alignedData?.relation ?? 'invalidates',
-            dim: currentData?.dim ?? alignedData?.dim ?? false,
-            highlighted: currentData?.highlighted ?? alignedData?.highlighted ?? false,
-            laneOffset: Number(alignedData?.laneOffset ?? currentData?.laneOffset ?? 0),
-          } satisfies FlowEdgeData,
-          style: currentEdge.style,
-          className: currentEdge.className,
-          animated: currentEdge.animated,
-        };
-      });
-
-      const layoutedWithDividers = [...projectDividers, ...layoutedNodesWithCurrentVisuals];
-
-      setNodes(layoutedWithDividers);
-      setEdges(alignedEdgesWithCurrentVisuals);
-
-      reactFlow
-        .fitView({ padding: 0.1, duration: 180 })
-        .then(() => {
-          if (cancelled) {
-            return;
+        const layoutedNodesWithCurrentVisuals = projectPositionedNodes.map((node) => {
+          const currentNode = currentFlowNodeById.get(node.id);
+          if (!currentNode) {
+            return node;
           }
 
-          const minY = minimumNodeY(layoutedWithDividers);
-          if (minY === null) {
-            return;
+          return {
+            ...node,
+            data: currentNode.data,
+            style: {
+              ...node.style,
+              ...currentNode.style,
+            },
+          };
+        });
+
+        const alignedEdgesWithCurrentVisuals = alignedEdges.map((edge) => {
+          const currentEdge = currentFlowEdgeById.get(edge.id);
+          if (!currentEdge) {
+            return edge;
           }
 
-          const viewport = reactFlow.getViewport();
-          const alignedY = 28 - minY * viewport.zoom;
-          reactFlow
-            .setViewport(
-              {
-                x: viewport.x,
-                y: alignedY,
-                zoom: viewport.zoom,
-              },
-              { duration: 120 },
-            )
-            .then(undefined, () => undefined);
-        })
-        .then(undefined, () => undefined);
+          const alignedData = edge.data as FlowEdgeData | undefined;
+          const currentData = currentEdge.data as FlowEdgeData | undefined;
+
+          return {
+            ...edge,
+            type: currentEdge.type,
+            sourceHandle: currentEdge.sourceHandle,
+            targetHandle: currentEdge.targetHandle,
+            data: {
+              relation: currentData?.relation ?? alignedData?.relation ?? 'invalidates',
+              dim: currentData?.dim ?? alignedData?.dim ?? false,
+              highlighted: currentData?.highlighted ?? alignedData?.highlighted ?? false,
+              laneOffset: Number(alignedData?.laneOffset ?? currentData?.laneOffset ?? 0),
+            } satisfies FlowEdgeData,
+            style: currentEdge.style,
+            className: currentEdge.className,
+            animated: currentEdge.animated,
+          };
+        });
+
+        const layoutedWithDividers = [...projectDividers, ...layoutedNodesWithCurrentVisuals];
+
+        setNodes(layoutedWithDividers);
+        setEdges(alignedEdgesWithCurrentVisuals);
+
+        reactFlow
+          .fitView({ padding: 0.1, duration: 180 })
+          .then(() => {
+            if (cancelled) {
+              return;
+            }
+
+            const minY = minimumNodeY(layoutedWithDividers);
+            if (minY === null) {
+              return;
+            }
+
+            const viewport = reactFlow.getViewport();
+            const alignedY = 28 - minY * viewport.zoom;
+            reactFlow
+              .setViewport(
+                {
+                  x: viewport.x,
+                  y: alignedY,
+                  zoom: viewport.zoom,
+                },
+                { duration: 120 },
+              )
+              .then(undefined, () => undefined);
+          })
+          .then(undefined, () => undefined);
+      };
+
+      runLayout().then(undefined, () => undefined);
     }, 150);
 
     return () => {
@@ -1968,6 +2129,7 @@ export function GraphCanvas({ payload }: { payload: WebviewPayload }) {
     isMultiProject,
     isMonorepo,
     queryCallsiteImpactById,
+    runDagreLayout,
   ]);
 
   const onNodeClick: NodeMouseHandler = (_, node) => {
