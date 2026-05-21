@@ -1,5 +1,5 @@
-import { projectLabelFromScope } from '../utils/projectScope';
 import type { GraphNode, WebviewPayload } from '../types/model';
+import { projectLabelFromScope } from '../utils/projectScope';
 import { isDeclareActionNode } from '../utils/utils';
 
 export interface GraphLayoutIndex {

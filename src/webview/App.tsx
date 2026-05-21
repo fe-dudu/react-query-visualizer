@@ -2,8 +2,8 @@ import { ReactFlowProvider } from '@xyflow/react';
 import { useCallback, useState } from 'react';
 
 import type { WebviewPayload } from './types/model';
-import { defaultPayload } from './utils/constants';
 import { GraphCanvas } from './components/GraphCanvas';
+import { defaultPayload } from './utils/constants';
 import { useHostThemeSync } from './utils/hostTheme';
 
 export default function App() {

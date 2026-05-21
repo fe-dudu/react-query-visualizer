@@ -1,12 +1,12 @@
 import type { Edge, Node } from '@xyflow/react';
 
 import type { HighlightState } from './shared';
-import type { GraphData, GraphNode } from '../types/model';
-import type { FilterState, NodeExplanation } from '../types/viewTypes';
-import { collapseGraphIfLarge as collapseGraphIfLargeImpl } from '../layout/collapseGraphIfLarge';
 import { applySearchFilter as applySearchFilterImpl, computeVisibleGraph as computeVisibleGraphImpl } from './filters';
 import { buildFlowGraph as buildFlowGraphImpl } from './flowGraph';
 import { buildNodeExplanation as buildNodeExplanationImpl } from './nodeExplanation';
+import { collapseGraphIfLarge as collapseGraphIfLargeImpl } from '../layout/collapseGraphIfLarge';
+import type { GraphData, GraphNode } from '../types/model';
+import type { FilterState, NodeExplanation } from '../types/viewTypes';
 
 export function collapseGraphIfLarge(graph: GraphData, threshold = 800): { graph: GraphData; collapsed: boolean } {
   return collapseGraphIfLargeImpl(graph, threshold);

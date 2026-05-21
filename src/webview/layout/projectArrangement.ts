@@ -2,7 +2,7 @@ import type { Node } from '@xyflow/react';
 
 import { getGraphLayoutIndex } from './layoutIndex';
 import { projectKeyForNode } from './layoutNodeMetrics';
-import { parseProjectScope } from '../utils/projectScope';
+import { computeProjectGridShifts } from './projectLayout';
 import {
   DEFAULT_NODE_HEIGHT,
   MONOREPO_PROJECT_MAX_COLUMNS,
@@ -10,7 +10,7 @@ import {
   PROJECT_COLUMN_GAP,
 } from './spacing';
 import type { WebviewPayload } from '../types/model';
-import { computeProjectGridShifts } from './projectLayout';
+import { parseProjectScope } from '../utils/projectScope';
 
 export function isMonorepoGraph(graph: WebviewPayload['graph']): boolean {
   const packageScopedProjects = new Set<string>();

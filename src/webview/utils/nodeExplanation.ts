@@ -6,8 +6,8 @@ import {
   sortCallsites,
   sortFileRefs,
 } from './shared';
-import type { GraphData, GraphNode } from '../types/model';
 import { isDeclareActionNode, nodeFileDisplay, shortText } from './utils';
+import type { GraphData, GraphNode } from '../types/model';
 import type { NodeCallsite, NodeExplanation, NodeFileRef } from '../types/viewTypes';
 
 function buildExplanationForFile(

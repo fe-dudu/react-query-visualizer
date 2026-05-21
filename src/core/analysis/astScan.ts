@@ -1,7 +1,6 @@
 import * as t from '@babel/types';
 
 import type { ParseContext, QueryKeyResolver } from './types';
-import { getCertainty, isQueryLikeModule, mergeResolution, setCertainty } from './context';
 import { type Binding, type NodePath, traverseAst } from './astTraverse';
 import {
   extractLeafIdentifier,
@@ -12,6 +11,7 @@ import {
   queryClientTypeAnnotationCertainty,
 } from './certainty';
 import { ACTION_METHOD_TO_RELATION, QUERY_CLIENT_DECLARE_METHODS, QUERY_HOOKS } from './constants';
+import { getCertainty, isQueryLikeModule, mergeResolution, setCertainty } from './context';
 import {
   findObjectPropertyValue,
   inferActionQueryKey,

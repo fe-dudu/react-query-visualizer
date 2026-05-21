@@ -1,5 +1,6 @@
 import { Handle, type NodeProps, Position } from '@xyflow/react';
 
+import type { FlowNodeData } from '../types/viewTypes';
 import {
   NODE_SURFACE_CLASS,
   RELATION_BADGE_CLASS,
@@ -9,7 +10,6 @@ import {
   type VisualNodeKind,
 } from '../utils/constants';
 import { cx, isDeclareActionNode } from '../utils/utils';
-import type { FlowNodeData } from '../types/viewTypes';
 
 const NODE_KIND_LABEL = {
   file: 'File',

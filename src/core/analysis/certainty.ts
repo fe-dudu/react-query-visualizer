@@ -1,8 +1,8 @@
 import * as t from '@babel/types';
 
 import type { ParseContext } from './types';
-import { getCertainty } from './context';
 import { QUERY_HOOKS } from './constants';
+import { getCertainty } from './context';
 import type { Resolution } from '../../shared/types';
 
 export function hookCallInfo(

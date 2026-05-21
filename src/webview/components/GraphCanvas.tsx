@@ -15,15 +15,14 @@ import {
 } from '@xyflow/react';
 import { type SetStateAction, useEffect, useMemo, useRef, useState } from 'react';
 
-import type { WebviewPayload } from '../types/model';
-import type { FilterState, FlowEdgeData } from '../types/viewTypes';
 import { RqvFlowNode } from './FlowNode';
 import { LeftPanel } from './LeftPanel';
 import { ProjectDividerNode } from './ProjectDividerNode';
-import { RightPanel } from './RightPanel';
 import { ResizeDivider } from './ResizeDivider';
-import { defaultFilters } from '../utils/defaultFilters';
+import { RightPanel } from './RightPanel';
+import { collapseGraphIfLarge } from '../layout/collapseGraphIfLarge';
 import { applyEdgeGeometryLanes, minimumNodeY } from '../layout/edgeGeometry';
+import { type LayoutOptions, getLayoutedElements } from '../layout/layout';
 import { getGraphLayoutIndex } from '../layout/layoutIndex';
 import {
   alignDeclareNodesLeftOfQuery,
@@ -36,17 +35,18 @@ import {
   orderNodesForLayout,
 } from '../layout/layoutTransforms';
 import { buildProjectDividerNodes } from '../layout/projectDividers';
-import { buildRelatedFiles } from '../utils/relatedFiles';
-import { revealCallsiteInCode, revealFileInCode, revealNodeInCode } from '../utils/reveal';
-import { buildSelectedTrail } from '../utils/selectedTrail';
 import { clampHorizontalSpacing, clampVerticalSpacing } from '../layout/spacing';
 import { useDagreLayoutWorker } from '../layout/useDagreLayoutWorker';
+import { useResizablePanels } from '../layout/useResizablePanels';
+import type { WebviewPayload } from '../types/model';
+import type { FilterState, FlowEdgeData } from '../types/viewTypes';
+import { defaultFilters } from '../utils/defaultFilters';
 import { applySearchFilter, computeVisibleGraph } from '../utils/filters';
 import { buildFlowGraph } from '../utils/flowGraph';
 import { buildNodeExplanation } from '../utils/nodeExplanation';
-import { collapseGraphIfLarge } from '../layout/collapseGraphIfLarge';
-import { useResizablePanels } from '../layout/useResizablePanels';
-import { type LayoutOptions, getLayoutedElements } from '../layout/layout';
+import { buildRelatedFiles } from '../utils/relatedFiles';
+import { revealCallsiteInCode, revealFileInCode, revealNodeInCode } from '../utils/reveal';
+import { buildSelectedTrail } from '../utils/selectedTrail';
 import { cx } from '../utils/utils';
 export function GraphCanvas({ payload }: { payload: WebviewPayload }) {
   const [filters, setFilters] = useState<FilterState>(defaultFilters);

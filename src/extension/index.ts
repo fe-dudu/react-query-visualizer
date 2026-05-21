@@ -1,12 +1,12 @@
 import * as vscode from 'vscode';
 
-import type { WebviewPayload } from '../shared/types';
+import { revealInCode } from './commands/reveal';
 import { RqvActivityViewProvider } from './views/activityView';
+import { GraphPanel, getDefaultPayload } from './views/graphPanel';
+import { getDefaultScopeWorkspace, getWorkspaceFolders } from './workspace/folders';
 import { getLayoutConfig, getScanScopeConfig } from '../core/workspace/config';
 import { promptScope } from '../core/workspace/scope';
-import { revealInCode } from './commands/reveal';
-import { getDefaultScopeWorkspace, getWorkspaceFolders } from './workspace/folders';
-import { GraphPanel, getDefaultPayload } from './views/graphPanel';
+import type { WebviewPayload } from '../shared/types';
 
 let latestPayload: WebviewPayload | undefined;
 let activityViewProvider: RqvActivityViewProvider | undefined;

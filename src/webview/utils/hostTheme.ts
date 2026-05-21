@@ -7,8 +7,8 @@ import {
   hostThemeKindToDark,
   readHostThemeKind,
 } from './detectTheme';
-import type { WebviewPayload } from '../types/model';
 import { vscode } from './vscode';
+import type { WebviewPayload } from '../types/model';
 
 export function useHostThemeSync(onPayload: (payload: WebviewPayload) => void): void {
   const hostThemeKindRef = useRef<HostThemeKind | undefined>(undefined);
