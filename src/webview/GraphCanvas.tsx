@@ -225,6 +225,13 @@ interface ProjectRange {
   maxY: number;
 }
 
+interface GraphLayoutIndex {
+  nodeById: Map<string, GraphNode>;
+  queryProjectById: Map<string, string>;
+  queryCallsiteImpactById: Map<string, number>;
+  projectCount: number;
+}
+
 const DEFAULT_NODE_HEIGHT = 173;
 const PROJECT_TOP_DIVIDER_GAP = 42;
 const PROJECT_BAND_GAP = 8;
@@ -243,6 +250,7 @@ const HORIZONTAL_SPACING_MAX = 3000;
 const LANE_COLUMN_BUCKET_SIZE = 96;
 const LANE_VALUE_BUCKET_SIZE = 14;
 const LANE_COLLISION_SPREAD = 18;
+const graphLayoutIndexCache = new WeakMap<WebviewPayload['graph'], GraphLayoutIndex>();
 
 function resolveVerticalRowGap(verticalSpacing: number): number {
   return Math.max(0, Math.round(verticalSpacing));
@@ -256,9 +264,10 @@ function clampHorizontalSpacing(value: number): number {
   return Math.max(HORIZONTAL_SPACING_MIN, Math.min(HORIZONTAL_SPACING_MAX, Math.round(value)));
 }
 
-function buildQueryProjectMap(graph: WebviewPayload['graph']): Map<string, string> {
+function buildGraphLayoutIndex(graph: WebviewPayload['graph']): GraphLayoutIndex {
   const nodeById = new Map(graph.nodes.map((node) => [node.id, node]));
   const countsByQuery = new Map<string, Map<string, number>>();
+  const queryCallsiteImpactById = new Map<string, number>();
 
   for (const edge of graph.edges) {
     const sourceNode = nodeById.get(edge.source);
@@ -266,6 +275,8 @@ function buildQueryProjectMap(graph: WebviewPayload['graph']): Map<string, strin
     if (!sourceNode || !targetNode || sourceNode.kind !== 'action' || targetNode.kind !== 'queryKey') {
       continue;
     }
+
+    queryCallsiteImpactById.set(targetNode.id, (queryCallsiteImpactById.get(targetNode.id) ?? 0) + 1);
 
     const projectLabel = projectLabelFromScope(sourceNode.metrics?.projectScope);
     if (!projectLabel) {
@@ -286,7 +297,41 @@ function buildQueryProjectMap(graph: WebviewPayload['graph']): Map<string, strin
     }
   }
 
-  return projectByQuery;
+  const projects = new Set<string>();
+  for (const node of graph.nodes) {
+    if (node.kind === 'action' && isDeclareActionNode(node)) {
+      continue;
+    }
+
+    if (node.kind !== 'file' && node.kind !== 'action' && node.kind !== 'queryKey') {
+      continue;
+    }
+
+    const label = projectLabelForLayoutNode(node, projectByQuery);
+    if (!label) {
+      continue;
+    }
+
+    projects.add(label);
+  }
+
+  return {
+    nodeById,
+    queryProjectById: projectByQuery,
+    queryCallsiteImpactById,
+    projectCount: projects.size,
+  };
+}
+
+function getGraphLayoutIndex(graph: WebviewPayload['graph']): GraphLayoutIndex {
+  const cached = graphLayoutIndexCache.get(graph);
+  if (cached) {
+    return cached;
+  }
+
+  const index = buildGraphLayoutIndex(graph);
+  graphLayoutIndexCache.set(graph, index);
+  return index;
 }
 
 function projectLabelForLayoutNode(graphNode: GraphNode, queryProjectById: Map<string, string>): string | null {
@@ -298,8 +343,7 @@ function projectLabelForLayoutNode(graphNode: GraphNode, queryProjectById: Map<s
 }
 
 function buildProjectRanges(layoutedNodes: Node[], graph: WebviewPayload['graph']): Map<string, ProjectRange> {
-  const graphNodeById = new Map(graph.nodes.map((node) => [node.id, node]));
-  const queryProjectById = buildQueryProjectMap(graph);
+  const { nodeById: graphNodeById, queryProjectById } = getGraphLayoutIndex(graph);
   const rangesByProject = new Map<string, ProjectRange>();
 
   for (const layoutedNode of layoutedNodes) {
@@ -388,8 +432,7 @@ function applyProjectBandSpacing(
     return layoutedNodes;
   }
 
-  const graphNodeById = new Map(graph.nodes.map((node) => [node.id, node]));
-  const queryProjectById = buildQueryProjectMap(graph);
+  const { nodeById: graphNodeById, queryProjectById } = getGraphLayoutIndex(graph);
 
   return layoutedNodes.map((layoutedNode) => {
     const graphNode = graphNodeById.get(layoutedNode.id);
@@ -552,29 +595,6 @@ function buildProjectDividerNodes(
   return dividers;
 }
 
-function countProjects(graph: WebviewPayload['graph']): number {
-  const queryProjectById = buildQueryProjectMap(graph);
-  const projects = new Set<string>();
-  for (const node of graph.nodes) {
-    if (node.kind === 'action' && isDeclareActionNode(node)) {
-      continue;
-    }
-
-    if (node.kind !== 'file' && node.kind !== 'action' && node.kind !== 'queryKey') {
-      continue;
-    }
-
-    const label = projectLabelForLayoutNode(node, queryProjectById);
-    if (!label) {
-      continue;
-    }
-
-    projects.add(label);
-  }
-
-  return projects.size;
-}
-
 function isMonorepoGraph(graph: WebviewPayload['graph']): boolean {
   const packageScopedProjects = new Set<string>();
 
@@ -649,30 +669,12 @@ function queryImpactForNode(graphNode: GraphNode | undefined, queryCallsiteImpac
   return queryCallsiteImpactById.get(graphNode.id) ?? Number(graphNode.metrics?.affectedFiles ?? 0);
 }
 
-function buildQueryCallsiteImpactMap(graph: WebviewPayload['graph']): Map<string, number> {
-  const nodeById = new Map(graph.nodes.map((node) => [node.id, node]));
-  const queryCallsiteImpactById = new Map<string, number>();
-
-  for (const edge of graph.edges) {
-    const sourceNode = nodeById.get(edge.source);
-    const targetNode = nodeById.get(edge.target);
-    if (!sourceNode || !targetNode || sourceNode.kind !== 'action' || targetNode.kind !== 'queryKey') {
-      continue;
-    }
-
-    queryCallsiteImpactById.set(targetNode.id, (queryCallsiteImpactById.get(targetNode.id) ?? 0) + 1);
-  }
-
-  return queryCallsiteImpactById;
-}
-
 function orderNodesForLayout(
   nodes: Node[],
   graph: WebviewPayload['graph'],
   queryCallsiteImpactById: Map<string, number>,
 ): Node[] {
-  const graphNodeById = new Map(graph.nodes.map((node) => [node.id, node]));
-  const queryProjectById = buildQueryProjectMap(graph);
+  const { nodeById: graphNodeById, queryProjectById } = getGraphLayoutIndex(graph);
   const actionImpactById = new Map<string, number>();
 
   for (const edge of graph.edges) {
@@ -742,9 +744,8 @@ function alignQueryNodesNearSources(
   queryCallsiteImpactById: Map<string, number>,
   verticalSpacing: number,
 ): Node[] {
-  const graphNodeById = new Map(graph.nodes.map((node) => [node.id, node]));
+  const { nodeById: graphNodeById, queryProjectById } = getGraphLayoutIndex(graph);
   const layoutNodeById = new Map(nodes.map((node) => [node.id, node]));
-  const queryProjectById = buildQueryProjectMap(graph);
   const queryIdsByProject = new Map<string, string[]>();
   const projectNodeIdsByProject = new Map<string, string[]>();
   const actionIdsByQuery = new Map<string, string[]>();
@@ -920,8 +921,7 @@ function alignQueryNodesNearSources(
 }
 
 function alignQueryNodesToRightColumn(nodes: Node[], graph: WebviewPayload['graph'], groupByProject = false): Node[] {
-  const graphNodeById = new Map(graph.nodes.map((node) => [node.id, node]));
-  const queryProjectById = buildQueryProjectMap(graph);
+  const { nodeById: graphNodeById, queryProjectById } = getGraphLayoutIndex(graph);
 
   if (groupByProject) {
     const boundsByProject = new Map<
@@ -1041,7 +1041,7 @@ function alignQueryNodesToRightColumn(nodes: Node[], graph: WebviewPayload['grap
 }
 
 function alignDeclareNodesLeftOfQuery(nodes: Node[], graph: WebviewPayload['graph']): Node[] {
-  const graphNodeById = new Map(graph.nodes.map((node) => [node.id, node]));
+  const { nodeById: graphNodeById } = getGraphLayoutIndex(graph);
   const layoutNodeById = new Map(nodes.map((node) => [node.id, node]));
   const nextXById = new Map<string, number>();
 
@@ -1098,7 +1098,7 @@ function arrangeProjectsHorizontally(nodes: Node[], graph: WebviewPayload['graph
     return nodes;
   }
 
-  const queryProjectById = buildQueryProjectMap(graph);
+  const { queryProjectById } = getGraphLayoutIndex(graph);
   const layoutNodeById = new Map(nodes.map((node) => [node.id, node]));
   const nodeIdsByProject = new Map<string, string[]>();
   const boundsByProject = new Map<
@@ -1229,9 +1229,8 @@ function compareActionOrder(
 }
 
 function alignFileActionGroups(nodes: Node[], graph: WebviewPayload['graph'], verticalSpacing: number): Node[] {
-  const graphNodeById = new Map(graph.nodes.map((node) => [node.id, node]));
+  const { nodeById: graphNodeById, queryProjectById } = getGraphLayoutIndex(graph);
   const layoutNodeById = new Map(nodes.map((node) => [node.id, node]));
-  const queryProjectById = buildQueryProjectMap(graph);
   const bucketsByProject = new Map<
     string,
     {
@@ -1748,7 +1747,8 @@ export function GraphCanvas({ payload }: { payload: WebviewPayload }) {
     [relationFilteredGraph, filters.search],
   );
   const visible = useMemo(() => collapseGraphIfLarge(searchFilteredGraph).graph, [searchFilteredGraph]);
-  const isMultiProject = useMemo(() => countProjects(visible) > 1, [visible]);
+  const graphLayoutIndex = useMemo(() => getGraphLayoutIndex(visible), [visible]);
+  const isMultiProject = graphLayoutIndex.projectCount > 1;
   const isMonorepo = useMemo(() => isMonorepoGraph(payload.graph), [payload.graph]);
   const queryKeys = useMemo(
     () =>
@@ -1758,7 +1758,7 @@ export function GraphCanvas({ payload }: { payload: WebviewPayload }) {
     [visible.nodes],
   );
   const relatedFiles = useMemo(() => buildRelatedFiles(payload.scannedFiles, visible), [payload.scannedFiles, visible]);
-  const queryCallsiteImpactById = useMemo(() => buildQueryCallsiteImpactMap(visible), [visible]);
+  const queryCallsiteImpactById = graphLayoutIndex.queryCallsiteImpactById;
   const selectedTrail = useMemo(() => buildSelectedTrail(visible, selectedId), [visible, selectedId]);
   const flowGraph = useMemo(
     () =>
@@ -1788,7 +1788,7 @@ export function GraphCanvas({ payload }: { payload: WebviewPayload }) {
   const [edges, setEdges, onEdgesChange] = useEdgesState<Edge>([]);
 
   const reactFlow = useReactFlow();
-  const selectedNode = visible.nodes.find((node) => node.id === selectedId) ?? null;
+  const selectedNode = selectedId ? (graphLayoutIndex.nodeById.get(selectedId) ?? null) : null;
 
   const nodeTypes = useMemo<NodeTypes>(
     () => ({
@@ -2103,6 +2103,7 @@ export function GraphCanvas({ payload }: { payload: WebviewPayload }) {
           onNodeDoubleClick={onNodeDoubleClick}
           onPaneClick={() => setSelectedId(null)}
           connectionLineType={ConnectionLineType.Bezier}
+          onlyRenderVisibleElements
           fitView
           minZoom={0.24}
           maxZoom={2.2}
