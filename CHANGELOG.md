@@ -1,5 +1,11 @@
 # react-query-visualizer
 
+## 0.0.5
+
+### Patch Changes
+
+- [#10](https://github.com/fe-dudu/react-query-visualizer/pull/10) [`18e3461`](https://github.com/fe-dudu/react-query-visualizer/commit/18e3461d139c8d41729b1818dd3f728dd12816c1) Thanks [@fe-dudu](https://github.com/fe-dudu)! - Improve scan stability and graph rendering performance.
+
 ## 0.0.4
 
 ### Patch Changes
