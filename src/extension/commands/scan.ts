@@ -3,7 +3,7 @@ import * as vscode from 'vscode';
 
 import { runStaticAnalysis } from '../../core/analysis/analyzer';
 import { buildGraph } from '../../core/graph/buildGraph';
-import type { GraphRoot } from '../../core/graph/graphBuilderTypes';
+import type { GraphRoot } from '../../core/graph/graphBuilder';
 import { getLayoutConfig, persistScanScope } from '../../core/workspace/config';
 import { scopeToLabel } from '../../core/workspace/scope';
 import type { AnalysisResult, GraphData, ScanScope, ScannedFile, WebviewPayload } from '../../shared/types';

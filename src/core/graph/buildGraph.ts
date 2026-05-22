@@ -1,4 +1,4 @@
-import type { GraphRoot, PendingActionToQueryLink } from './graphBuilderTypes';
+import type { GraphRoot, PendingActionToQueryLink } from './graphBuilder';
 import { makeActionNodeId, makeFileNodeId, makeQueryKeyNodeId } from './nodeIds';
 import { mapParseErrors, normalizeFilePath, projectScopeForFile, toDisplayPath } from './paths';
 import {
