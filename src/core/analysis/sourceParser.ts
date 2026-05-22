@@ -1,4 +1,5 @@
 import type * as t from '@babel/types';
+import * as path from 'node:path';
 import { type ParseOptions, parseSync } from '@swc/wasm';
 
 import { normalizeSwcNodeShape } from './astTraverse';
@@ -8,15 +9,21 @@ type ParserSyntax = 'typescript' | 'flow';
 interface ParseAttempt {
   syntax: ParserSyntax;
   script: boolean;
+  jsx: boolean;
 }
 
 const SWC_TARGET: ParseOptions['target'] = 'es2020';
+
+function usesJsxSyntax(filePath: string): boolean {
+  const lower = path.basename(filePath).toLowerCase();
+  return lower.endsWith('.tsx') || lower.endsWith('.jsx');
+}
 
 function buildParseOptions(attempt: ParseAttempt): ParseOptions {
   if (attempt.syntax === 'typescript') {
     return {
       syntax: 'typescript',
-      tsx: true,
+      tsx: attempt.jsx,
       decorators: true,
       dynamicImport: true,
       script: attempt.script,
@@ -27,7 +34,7 @@ function buildParseOptions(attempt: ParseAttempt): ParseOptions {
 
   return {
     syntax: 'flow',
-    jsx: true,
+    jsx: attempt.jsx,
     decorators: true,
     dynamicImport: true,
     script: attempt.script,
@@ -137,11 +144,18 @@ function parseWithSwc(raw: string, attempt: ParseAttempt): t.File {
 }
 
 export function parseSource(raw: string, filePath: string): t.File {
+  const jsxPreferred = usesJsxSyntax(filePath);
+  const primaryJsx = jsxPreferred;
+  const secondaryJsx = !jsxPreferred;
   const attempts: ParseAttempt[] = [
-    { syntax: 'typescript', script: false },
-    { syntax: 'typescript', script: true },
-    { syntax: 'flow', script: false },
-    { syntax: 'flow', script: true },
+    { syntax: 'typescript', script: false, jsx: primaryJsx },
+    { syntax: 'typescript', script: true, jsx: primaryJsx },
+    { syntax: 'flow', script: false, jsx: primaryJsx },
+    { syntax: 'flow', script: true, jsx: primaryJsx },
+    { syntax: 'typescript', script: false, jsx: secondaryJsx },
+    { syntax: 'typescript', script: true, jsx: secondaryJsx },
+    { syntax: 'flow', script: false, jsx: secondaryJsx },
+    { syntax: 'flow', script: true, jsx: secondaryJsx },
   ];
 
   let firstError: unknown;

@@ -1,7 +1,7 @@
 import { existsSync } from 'node:fs';
 import * as path from 'node:path';
 
-import type { GraphRoot } from './graphBuilderTypes';
+import type { GraphRoot } from './graphBuilder';
 import type { AnalysisResult } from '../../shared/types';
 
 export function toPosix(input: string): string {
