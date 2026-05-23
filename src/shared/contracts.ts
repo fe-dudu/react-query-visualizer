@@ -10,6 +10,8 @@ export type GraphRelation =
   | 'removes'
   | 'sets';
 
+export type OperationRelation = Exclude<GraphRelation, 'declares'>;
+
 export type Resolution = 'static' | 'dynamic';
 
 export type MatchMode = 'exact' | 'prefix' | 'all' | 'predicate' | 'unknown';
@@ -103,6 +105,9 @@ export interface ScannedFile {
   path: string;
   workspace: string;
   depth: number;
+  project?: string;
+  projectRelativePath?: string;
+  impact?: number;
 }
 
 export interface WebviewPayload {

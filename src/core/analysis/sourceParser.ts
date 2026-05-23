@@ -1,46 +1,65 @@
-import type * as t from '@babel/types';
 import * as path from 'node:path';
-import { type ParseOptions, parseSync } from '@swc/wasm';
+import { parseSync } from '@oxc-parser/binding-wasm32-wasi';
+import { wrap } from 'oxc-parser/src-js/wrap.js';
 
-import { normalizeSwcNodeShape } from './astTraverse';
+import { type File, type Loc, type Program, isNode, normalizeAstShape } from './ast';
 
-type ParserSyntax = 'typescript' | 'flow';
+type OxcParseOptions = {
+  lang?: 'js' | 'jsx' | 'ts' | 'tsx';
+  sourceType: 'unambiguous';
+  astType: 'ts';
+  range: true;
+  preserveParens: true;
+  showSemanticErrors: false;
+};
 
-interface ParseAttempt {
-  syntax: ParserSyntax;
-  script: boolean;
-  jsx: boolean;
-}
+type ParseAttempt = {
+  lang?: OxcParseOptions['lang'];
+};
 
-const SWC_TARGET: ParseOptions['target'] = 'es2020';
-
-function usesJsxSyntax(filePath: string): boolean {
+function inferLang(filePath: string): OxcParseOptions['lang'] | undefined {
   const lower = path.basename(filePath).toLowerCase();
-  return lower.endsWith('.tsx') || lower.endsWith('.jsx');
-}
-
-function buildParseOptions(attempt: ParseAttempt): ParseOptions {
-  if (attempt.syntax === 'typescript') {
-    return {
-      syntax: 'typescript',
-      tsx: attempt.jsx,
-      decorators: true,
-      dynamicImport: true,
-      script: attempt.script,
-      comments: true,
-      target: SWC_TARGET,
-    };
+  if (lower.endsWith('.tsx')) {
+    return 'tsx';
+  }
+  if (lower.endsWith('.ts') || lower.endsWith('.mts') || lower.endsWith('.cts')) {
+    return 'ts';
+  }
+  if (lower.endsWith('.jsx')) {
+    return 'jsx';
+  }
+  if (lower.endsWith('.js') || lower.endsWith('.mjs') || lower.endsWith('.cjs')) {
+    return 'js';
   }
 
+  return undefined;
+}
+
+function inferAttemptLangs(filePath: string): OxcParseOptions['lang'][] {
+  const primary = inferLang(filePath);
+  switch (primary) {
+    case 'js':
+      return ['js', 'jsx', 'tsx'];
+    case 'jsx':
+      return ['jsx', 'tsx'];
+    case 'ts':
+      return ['ts', 'tsx'];
+    case 'tsx':
+      return ['tsx'];
+    default:
+      return ['js', 'jsx', 'ts', 'tsx'];
+  }
+}
+
+function buildParseOptions(attempt: ParseAttempt): OxcParseOptions {
   return {
-    syntax: 'flow',
-    jsx: attempt.jsx,
-    decorators: true,
-    dynamicImport: true,
-    script: attempt.script,
-    comments: true,
-    target: SWC_TARGET,
-  } as unknown as ParseOptions;
+    lang: attempt.lang,
+    sourceType: 'unambiguous',
+    astType: 'ts',
+    range: true,
+    preserveParens: true,
+    showSemanticErrors: false,
+  };
 }
 
 function buildLineStarts(raw: string): number[] {
@@ -54,7 +73,7 @@ function buildLineStarts(raw: string): number[] {
 }
 
 function offsetToLoc(lineStarts: number[], offset: number): { line: number; column: number } {
-  const normalizedOffset = Math.max(0, offset - 1);
+  const normalizedOffset = Math.max(0, offset);
   let low = 0;
   let high = lineStarts.length - 1;
 
@@ -74,95 +93,78 @@ function offsetToLoc(lineStarts: number[], offset: number): { line: number; colu
   };
 }
 
-function annotateLocs(node: unknown, lineStarts: number[]): void {
-  if (!node || typeof node !== 'object') {
+function annotateLocs(node: unknown, lineStarts: number[], seen = new WeakSet<object>()): void {
+  if (!isNode(node) || seen.has(node)) {
     return;
   }
+  seen.add(node);
 
-  const record = node as {
-    type?: unknown;
-    span?: { start: number; end: number };
-    loc?: unknown;
-    [key: string]: unknown;
+  const record = node as Record<string, unknown> & {
+    loc?: Loc;
+    start?: number;
+    end?: number;
+    parent?: unknown;
   };
 
-  if (typeof record.type !== 'string') {
-    return;
-  }
-
-  if (!record.loc && record.span && typeof record.span.start === 'number' && typeof record.span.end === 'number') {
+  if (!record.loc && typeof record.start === 'number' && typeof record.end === 'number') {
     record.loc = {
-      start: offsetToLoc(lineStarts, record.span.start),
-      end: offsetToLoc(lineStarts, record.span.end),
+      start: offsetToLoc(lineStarts, record.start),
+      end: offsetToLoc(lineStarts, record.end),
     };
   }
 
   for (const [key, value] of Object.entries(record)) {
-    if (
-      key === 'type' ||
-      key === 'span' ||
-      key === 'loc' ||
-      key === 'start' ||
-      key === 'end' ||
-      key === 'raw' ||
-      key === 'ctxt' ||
-      key === 'comments' ||
-      key === 'leadingComments' ||
-      key === 'innerComments' ||
-      key === 'trailingComments'
-    ) {
+    if (key === 'loc' || key === 'parent') {
       continue;
     }
 
     if (Array.isArray(value)) {
       for (const child of value) {
-        annotateLocs(child, lineStarts);
+        annotateLocs(child, lineStarts, seen);
       }
       continue;
     }
 
-    annotateLocs(value, lineStarts);
+    annotateLocs(value, lineStarts, seen);
   }
 }
 
-function parseWithSwc(raw: string, attempt: ParseAttempt): t.File {
-  const swcAst = parseSync(raw, buildParseOptions(attempt));
+function parseWithOxc(raw: string, filePath: string, attempt: ParseAttempt): File {
+  const result = wrap(parseSync(filePath, raw, buildParseOptions(attempt)));
+  if (result.errors.length > 0) {
+    const first = result.errors[0];
+    const message = first.codeframe ? first.codeframe : first.message;
+    throw new Error(message);
+  }
+
+  const program = result.program as Program;
   const lineStarts = buildLineStarts(raw);
-  annotateLocs(swcAst, lineStarts);
-  normalizeSwcNodeShape(swcAst as unknown as t.Node);
-  annotateLocs(swcAst, lineStarts);
-  const program = swcAst as unknown as t.Program;
-  program.type = 'Program';
-  program.sourceType = attempt.script ? 'script' : 'module';
+  normalizeAstShape(program);
+  annotateLocs(program, lineStarts);
 
   return {
     type: 'File',
     program,
-    comments: [],
+    comments: result.comments.map((comment) => ({
+      ...comment,
+      value: comment.value ?? '',
+      loc: {
+        start: offsetToLoc(lineStarts, comment.start),
+        end: offsetToLoc(lineStarts, comment.end),
+      },
+    })),
     tokens: [],
-  } as unknown as t.File;
+  };
 }
 
-export function parseSource(raw: string, filePath: string): t.File {
-  const jsxPreferred = usesJsxSyntax(filePath);
-  const primaryJsx = jsxPreferred;
-  const secondaryJsx = !jsxPreferred;
-  const attempts: ParseAttempt[] = [
-    { syntax: 'typescript', script: false, jsx: primaryJsx },
-    { syntax: 'typescript', script: true, jsx: primaryJsx },
-    { syntax: 'flow', script: false, jsx: primaryJsx },
-    { syntax: 'flow', script: true, jsx: primaryJsx },
-    { syntax: 'typescript', script: false, jsx: secondaryJsx },
-    { syntax: 'typescript', script: true, jsx: secondaryJsx },
-    { syntax: 'flow', script: false, jsx: secondaryJsx },
-    { syntax: 'flow', script: true, jsx: secondaryJsx },
-  ];
+export function parseSource(raw: string, filePath: string): File {
+  const attempts: ParseAttempt[] = inferAttemptLangs(filePath).map((lang) => ({ lang }));
 
   let firstError: unknown;
 
   for (const attempt of attempts) {
     try {
-      return parseWithSwc(raw, attempt);
+      return parseWithOxc(raw, filePath, attempt);
     } catch (error) {
       if (firstError === undefined) {
         firstError = error;

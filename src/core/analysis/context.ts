@@ -1,5 +1,5 @@
 import type { ParseContext } from './types';
-import type { Resolution } from '../../shared/types';
+import type { Resolution } from '../../shared/contracts';
 
 export function createParseContext(): ParseContext {
   return {

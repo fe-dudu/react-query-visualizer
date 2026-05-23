@@ -1,13 +1,8 @@
 import type { GraphRoot, PendingActionToQueryLink } from './graphBuilder';
 import { makeActionNodeId, makeFileNodeId, makeQueryKeyNodeId } from './nodeIds';
 import { mapParseErrors, normalizeFilePath, projectScopeForFile, toDisplayPath } from './paths';
-import {
-  actionAffectsDeclaredQueryKey,
-  isDeclarationAnchorRecord,
-  isSetAnchoredConcreteKey,
-  isWildcardQueryKey,
-} from './queryKeyMatching';
-import type { AnalysisResult, GraphData, GraphNode, QueryRecord } from '../../shared/types';
+import { actionAffectsDeclaredQueryKey, isDeclarationAnchorRecord, isWildcardQueryKey } from './queryKeyMatching';
+import type { AnalysisResult, GraphData, GraphNode, QueryRecord } from '../../shared/contracts';
 
 export function buildGraph(roots: GraphRoot[], analysis: AnalysisResult): GraphData {
   const effectiveRoots = roots.length > 0 ? roots : [{ name: 'workspace', path: process.cwd() }];
@@ -30,7 +25,6 @@ export function buildGraph(roots: GraphRoot[], analysis: AnalysisResult): GraphD
   const queryKeyToProjectCounts = new Map<string, Map<string, number>>();
   const projectScopeCache = new Map<string, string>();
   const packageJsonCache = new Map<string, boolean>();
-  const setAnchoredQueryNodeIds = new Set<string>();
   const pendingActionToQueryLinks: PendingActionToQueryLink[] = [];
 
   analysis.records.forEach((record, index) => {
@@ -42,7 +36,7 @@ export function buildGraph(roots: GraphRoot[], analysis: AnalysisResult): GraphD
     const fileNodeId = makeFileNodeId(absoluteFile);
     const actionNodeId = makeActionNodeId(record, index);
     const wildcardQuery = isWildcardQueryKey(record);
-    const queryKeyNodeId = wildcardQuery ? undefined : makeQueryKeyNodeId(projectScope, record.queryKey.id);
+    const queryKeyNodeId = wildcardQuery ? undefined : makeQueryKeyNodeId(projectScope, record.queryKey.display);
 
     if (!nodeMap.has(fileNodeId)) {
       nodeMap.set(fileNodeId, {
@@ -210,16 +204,19 @@ export function buildGraph(roots: GraphRoot[], analysis: AnalysisResult): GraphD
         targets = [pending.queryKeyNodeId];
       }
     } else if (pending.wildcard) {
-      targets = declaredQueryNodeIdList.filter((queryKeyNodeId) => {
+      const wildcardTargets = pending.queryKeyNodeId ? [pending.queryKeyNodeId] : [];
+      const declaredTargets = declaredQueryNodeIdList.filter((queryKeyNodeId) => {
         const projects = declaredQueryProjectsByNodeId.get(queryKeyNodeId);
         return projects?.has(pending.projectScope) ?? false;
       });
-      targets = filterTargetsByScope(
-        targets,
-        pending.clientScopeId,
-        pending.executionScopeId,
-        pending.suiteScopeId,
-        pending.operation === 'clear' && Boolean(pending.executionScopeId || pending.suiteScopeId),
+      targets = wildcardTargets.concat(
+        filterTargetsByScope(
+          declaredTargets,
+          pending.clientScopeId,
+          pending.executionScopeId,
+          pending.suiteScopeId,
+          pending.operation === 'clear' && Boolean(pending.executionScopeId || pending.suiteScopeId),
+        ),
       );
     } else if (pending.queryKeyNodeId) {
       const matchedTargets = declaredQueryNodeIdList.filter((queryKeyNodeId) => {
@@ -243,10 +240,6 @@ export function buildGraph(roots: GraphRoot[], analysis: AnalysisResult): GraphD
       );
     }
     for (const target of targets) {
-      if (pending.relation === 'sets' && target.startsWith('qk:') && isSetAnchoredConcreteKey(pending.queryKey)) {
-        setAnchoredQueryNodeIds.add(target);
-      }
-
       const edgeB = `${pending.actionNodeId}->${target}:${pending.relation}`;
       if (!edgeMap.has(edgeB)) {
         edgeMap.set(edgeB, {
@@ -317,20 +310,7 @@ export function buildGraph(roots: GraphRoot[], analysis: AnalysisResult): GraphD
     }
   }
 
-  const allNodes = [...nodeMap.values()];
-  const definedQueryKeyNodeIds = new Set(
-    allNodes
-      .filter((node) => node.kind === 'queryKey')
-      .filter((node) => {
-        if (Number(node.metrics?.declaredCallsites ?? 0) > 0) {
-          return true;
-        }
-        return setAnchoredQueryNodeIds.has(node.id);
-      })
-      .map((node) => node.id),
-  );
-
-  const nodes = allNodes.filter((node) => node.kind !== 'queryKey' || definedQueryKeyNodeIds.has(node.id));
+  const nodes = [...nodeMap.values()];
   const allowedNodeIds = new Set(nodes.map((node) => node.id));
   const edges = [...edgeMap.values()].filter(
     (edge) => allowedNodeIds.has(edge.source) && allowedNodeIds.has(edge.target),

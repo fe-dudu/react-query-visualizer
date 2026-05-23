@@ -1,4 +1,4 @@
-import type { QueryRecord } from '../../shared/types';
+import type { QueryRecord } from '../../shared/contracts';
 
 export function makeFileNodeId(filePath: string): string {
   return `file:${filePath}`;

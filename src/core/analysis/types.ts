@@ -1,6 +1,5 @@
-import type * as t from '@babel/types';
-
-import type { NormalizedQueryKey, Resolution } from '../../shared/types';
+import type * as t from './ast';
+import type { NormalizedQueryKey, Resolution } from '../../shared/contracts';
 
 export interface ParseContext {
   queryHooks: Map<string, Resolution>;
@@ -40,6 +39,7 @@ export interface FileSymbols {
   filePath: string;
   values: Map<string, t.Expression>;
   functions: Map<string, t.Expression>;
+  functionNodes: Map<string, t.FunctionDeclaration | t.FunctionExpression | t.ArrowFunctionExpression>;
   mutableValues: Set<string>;
   imports: Map<string, ImportBinding>;
   exports: Map<string, string>;

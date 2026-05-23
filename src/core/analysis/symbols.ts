@@ -1,7 +1,7 @@
 import * as path from 'node:path';
-import * as t from '@babel/types';
 
 import type { FileSymbols, ReExportBinding, SymbolIndex } from './types';
+import * as t from './ast';
 import { type NodePath, traverseAst } from './astTraverse';
 
 const DEFAULT_EXPORT_NAME = '__default_export__';
@@ -31,6 +31,10 @@ export function normalizeAnalyzerPath(filePath: string): string {
 }
 
 export function unwrapExpression(node: t.Expression): t.Expression {
+  if (t.isParenthesizedExpression(node)) {
+    return unwrapExpression(node.expression);
+  }
+
   if (t.isTSAsExpression(node) || t.isTSSatisfiesExpression(node) || t.isTypeCastExpression(node)) {
     return unwrapExpression(node.expression);
   }
@@ -212,6 +216,47 @@ function collectExportedNamesFromDeclaration(
   }
 }
 
+function collectExportedDeclarationSymbols(
+  declaration: t.ExportNamedDeclaration['declaration'],
+  table: FileSymbols,
+): void {
+  if (!declaration) {
+    return;
+  }
+
+  if (t.isVariableDeclaration(declaration)) {
+    for (const declarator of declaration.declarations) {
+      if (!t.isIdentifier(declarator.id) || !declarator.init) {
+        continue;
+      }
+
+      const value = t.isExpression(declarator.init)
+        ? unwrapExpression(declarator.init)
+        : (declarator.init as unknown as t.Expression);
+      table.values.set(declarator.id.name, value);
+
+      if (t.isFunctionExpression(value) || t.isArrowFunctionExpression(value)) {
+        const returned = extractFunctionReturnExpression(value);
+        if (returned) {
+          table.functions.set(declarator.id.name, returned);
+        }
+
+        table.functionNodes.set(declarator.id.name, value);
+      }
+    }
+    return;
+  }
+
+  if (t.isFunctionDeclaration(declaration) && declaration.id) {
+    const returned = extractFunctionReturnExpression(declaration);
+    if (returned) {
+      table.functions.set(declaration.id.name, returned);
+    }
+
+    table.functionNodes.set(declaration.id.name, declaration);
+  }
+}
+
 function collectDefaultExport(declaration: t.ExportDefaultDeclaration['declaration'], table: FileSymbols): void {
   if (t.isIdentifier(declaration)) {
     table.exports.set('default', declaration.name);
@@ -223,6 +268,8 @@ function collectDefaultExport(declaration: t.ExportDefaultDeclaration['declarati
     if (returned) {
       table.functions.set(declaration.id.name, returned);
     }
+
+    table.functionNodes.set(declaration.id.name, declaration);
 
     table.exports.set('default', declaration.id.name);
     return;
@@ -237,19 +284,139 @@ function collectDefaultExport(declaration: t.ExportDefaultDeclaration['declarati
       if (returned) {
         table.functions.set(DEFAULT_EXPORT_NAME, returned);
       }
+
+      table.functionNodes.set(DEFAULT_EXPORT_NAME, unwrapped);
     }
 
     table.exports.set('default', DEFAULT_EXPORT_NAME);
   }
 }
 
-function collectLocalVariableSymbol(pathNode: NodePath<t.VariableDeclarator>, table: FileSymbols): void {
-  const { id, init } = pathNode.node;
-  if (!t.isIdentifier(id) || !init || !t.isExpression(init)) {
+function isIdentifierName(name: string): boolean {
+  return /^[A-Za-z_$][A-Za-z0-9_$]*$/.test(name);
+}
+
+function propertyExpressionForName(name: string): { property: t.Expression; computed: boolean } {
+  if (isIdentifierName(name)) {
+    return {
+      property: { type: 'Identifier', name } as t.Identifier,
+      computed: false,
+    };
+  }
+
+  return {
+    property: { type: 'StringLiteral', value: name } as t.StringLiteral,
+    computed: true,
+  };
+}
+
+function propertyExpressionForIndex(index: number): { property: t.Expression; computed: boolean } {
+  return {
+    property: { type: 'NumericLiteral', value: index } as t.NumericLiteral,
+    computed: true,
+  };
+}
+
+function makeMemberExpression(object: t.Expression, property: string | number): t.Expression {
+  const descriptor =
+    typeof property === 'number' ? propertyExpressionForIndex(property) : propertyExpressionForName(property);
+
+  return {
+    type: 'MemberExpression',
+    object: t.cloneNode(object, true),
+    property: descriptor.property,
+    computed: descriptor.computed,
+    optional: false,
+  } as t.MemberExpression;
+}
+
+function collectPatternBindings(target: t.Node, init: t.Expression, table: FileSymbols): void {
+  if (t.isIdentifier(target)) {
+    table.values.set(target.name, t.cloneNode(init, true));
     return;
   }
 
-  const value = unwrapExpression(init);
+  if (t.isAssignmentPattern(target)) {
+    collectPatternBindings(target.left, init, table);
+    return;
+  }
+
+  if (t.isObjectPattern(target)) {
+    for (const property of target.properties) {
+      if (t.isRestElement(property)) {
+        collectPatternBindings(property.argument, init, table);
+        continue;
+      }
+
+      if (!t.isObjectProperty(property)) {
+        continue;
+      }
+
+      let keyName: string | undefined;
+      if (t.isIdentifier(property.key)) {
+        keyName = property.key.name;
+      } else if (t.isStringLiteral(property.key)) {
+        keyName = property.key.value;
+      } else if (t.isNumericLiteral(property.key)) {
+        keyName = String(property.key.value);
+      }
+
+      if (!keyName) {
+        continue;
+      }
+
+      const nextInit = makeMemberExpression(init, keyName);
+      if (
+        t.isIdentifier(property.value) ||
+        t.isAssignmentPattern(property.value) ||
+        t.isObjectPattern(property.value) ||
+        t.isArrayPattern(property.value)
+      ) {
+        collectPatternBindings(property.value as t.Node, nextInit as t.Expression, table);
+      }
+    }
+    return;
+  }
+
+  if (t.isArrayPattern(target)) {
+    for (let index = 0; index < target.elements.length; index += 1) {
+      const element = target.elements[index];
+      if (!element) {
+        continue;
+      }
+
+      const nextInit = makeMemberExpression(init, index);
+      if (t.isRestElement(element)) {
+        collectPatternBindings(element.argument, nextInit as t.Expression, table);
+        continue;
+      }
+
+      if (
+        t.isIdentifier(element) ||
+        t.isAssignmentPattern(element) ||
+        t.isObjectPattern(element) ||
+        t.isArrayPattern(element)
+      ) {
+        collectPatternBindings(element as t.Node, nextInit as t.Expression, table);
+      }
+    }
+  }
+}
+
+function collectLocalVariableSymbol(pathNode: NodePath<t.VariableDeclarator>, table: FileSymbols): void {
+  const { id, init } = pathNode.node;
+  if (!t.isIdentifier(id) || !init) {
+    if (!init || !t.isExpression(init)) {
+      return;
+    }
+
+    if (t.isObjectPattern(id) || t.isArrayPattern(id)) {
+      collectPatternBindings(id, unwrapExpression(init), table);
+    }
+    return;
+  }
+
+  const value = t.isExpression(init) ? unwrapExpression(init) : (init as unknown as t.Expression);
   table.values.set(id.name, value);
 
   if (!t.isFunctionExpression(value) && !t.isArrowFunctionExpression(value)) {
@@ -262,6 +429,7 @@ function collectLocalVariableSymbol(pathNode: NodePath<t.VariableDeclarator>, ta
   }
 
   table.functions.set(id.name, returned);
+  table.functionNodes.set(id.name, value as t.FunctionExpression | t.ArrowFunctionExpression);
 }
 
 function collectAssignedIdentifiers(target: t.Node, names: Set<string>): void {
@@ -363,6 +531,23 @@ function shouldCollectVariableDeclarator(pathNode: NodePath<t.VariableDeclarator
     return true;
   }
 
+  if (t.isObjectPattern(pathNode.node.id) || t.isArrayPattern(pathNode.node.id)) {
+    const names = new Set<string>();
+    collectAssignedIdentifiers(pathNode.node.id, names);
+    for (const name of names) {
+      if (isQueryKeySymbolName(name)) {
+        return true;
+      }
+    }
+
+    if (pathNode.node.init && t.isExpression(pathNode.node.init) && names.has('queryKey')) {
+      const init = unwrapExpression(pathNode.node.init);
+      if (t.isCallExpression(init) || t.isObjectExpression(init) || t.isArrayExpression(init)) {
+        return true;
+      }
+    }
+  }
+
   return t.isIdentifier(pathNode.node.id) && isQueryKeySymbolName(pathNode.node.id.name);
 }
 
@@ -418,6 +603,7 @@ export function buildFileSymbols(filePath: string, ast: t.File): FileSymbols {
     filePath,
     values: new Map(),
     functions: new Map(),
+    functionNodes: new Map(),
     mutableValues: new Set(),
     imports: new Map(),
     exports: new Map(),
@@ -448,7 +634,8 @@ export function buildFileSymbols(filePath: string, ast: t.File): FileSymbols {
         }
 
         if (t.isImportNamespaceSpecifier(specifier)) {
-          table.imports.set(specifier.local.name, {
+          const namespaceSpecifier = specifier as t.ImportNamespaceSpecifier;
+          table.imports.set(namespaceSpecifier.local.name, {
             kind: 'namespace',
             source,
           });
@@ -478,6 +665,7 @@ export function buildFileSymbols(filePath: string, ast: t.File): FileSymbols {
       }
 
       table.functions.set(identifier.name, returned);
+      table.functionNodes.set(identifier.name, functionPath.node);
     },
 
     UpdateExpression(updatePath: NodePath<t.UpdateExpression>) {
@@ -493,6 +681,7 @@ export function buildFileSymbols(filePath: string, ast: t.File): FileSymbols {
     ExportNamedDeclaration(exportPath: NodePath<t.ExportNamedDeclaration>) {
       const declaration = exportPath.node;
       collectExportedNamesFromDeclaration(declaration.declaration, table);
+      collectExportedDeclarationSymbols(declaration.declaration, table);
       collectNamedReExports(declaration, table, table.reExports);
     },
 

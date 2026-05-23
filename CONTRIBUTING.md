@@ -73,7 +73,7 @@ pnpm run package:vsix
 
 - Query key inference edge cases (`src/core/analyzer/queryKey.ts`)
 - New React Query API coverage in scanner (`src/core/analyzer/astScan.ts`)
-- Graph readability/layout tuning (`src/webview/GraphCanvas.tsx`, `src/webview/graphUtils.ts`)
+- Graph readability/layout tuning (`src/webview/components/GraphCanvas.tsx`, `src/webview/utils/flowGraph.ts`)
 - Details panel clarity and UX (`src/webview/components/RightPanel.tsx`)
 
 ## Questions
