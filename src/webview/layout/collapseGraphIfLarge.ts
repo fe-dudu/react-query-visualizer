@@ -1,4 +1,4 @@
-import type { GraphData, GraphNode } from '../types/model';
+import type { GraphData, GraphNode } from '../../shared/contracts';
 
 function summarizeGroupedResolution(current: GraphNode, next: GraphNode): GraphNode['resolution'] {
   if (current.resolution === 'dynamic' || next.resolution === 'dynamic') {

@@ -1,5 +1,5 @@
-import type { GraphNode, WebviewPayload } from '../types/model';
-import { projectLabelFromScope } from '../utils/projectScope';
+import type { GraphNode, WebviewPayload } from '../../shared/contracts';
+import { projectLabelFromScope } from '../../shared/path';
 import { isDeclareActionNode } from '../utils/utils';
 
 export interface GraphLayoutIndex {

@@ -1,6 +1,6 @@
 import { OPERATION_RELATIONS } from './constants';
 import { nodeFileDisplay } from './utils';
-import type { GraphData, GraphNode, OperationRelation } from '../types/model';
+import type { GraphData, GraphNode, OperationRelation } from '../../shared/contracts';
 import type { NodeCallsite, NodeFileRef } from '../types/viewTypes';
 
 export interface HighlightState {

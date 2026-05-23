@@ -10,7 +10,7 @@ import {
   PROJECT_DIVIDER_TOP_MARGIN,
   PROJECT_TOP_DIVIDER_GAP,
 } from './spacing';
-import type { WebviewPayload } from '../types/model';
+import type { WebviewPayload } from '../../shared/contracts';
 import { isDeclareActionNode } from '../utils/utils';
 
 interface ProjectRange {

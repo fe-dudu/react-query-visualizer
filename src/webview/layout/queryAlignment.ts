@@ -3,7 +3,7 @@ import type { Node } from '@xyflow/react';
 import { getGraphLayoutIndex } from './layoutIndex';
 import { projectKeyForNode } from './layoutNodeMetrics';
 import { DECLARE_ACTION_QUERY_GAP, DEFAULT_NODE_HEIGHT, resolveVerticalRowGap } from './spacing';
-import type { GraphNode, WebviewPayload } from '../types/model';
+import type { GraphNode, WebviewPayload } from '../../shared/contracts';
 import { isDeclareActionNode } from '../utils/utils';
 
 export function alignQueryNodesNearSources(

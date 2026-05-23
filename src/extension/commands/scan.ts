@@ -6,7 +6,7 @@ import { buildGraph } from '../../core/graph/buildGraph';
 import type { GraphRoot } from '../../core/graph/graphBuilder';
 import { getLayoutConfig, persistScanScope } from '../../core/workspace/config';
 import { scopeToLabel } from '../../core/workspace/scope';
-import type { AnalysisResult, GraphData, ScanScope, ScannedFile, WebviewPayload } from '../../shared/types';
+import type { AnalysisResult, GraphData, ScanScope, ScannedFile, WebviewPayload } from '../../shared/contracts';
 import type { RqvActivityViewProvider } from '../views/activityView';
 import { GraphPanel } from '../views/graphPanel';
 import { getWorkspaceFolders, scopeForWorkspace } from '../workspace/folders';
@@ -25,9 +25,36 @@ interface ScanAndPublishOptions {
 }
 
 function mergeAnalysis(results: AnalysisResult[]): AnalysisResult {
+  const seenRecords = new Set<string>();
   return results.reduce<AnalysisResult>(
     (acc, current) => {
-      acc.records.push(...current.records);
+      for (const record of current.records) {
+        const dedupeKey = [
+          record.file,
+          record.loc.line,
+          record.loc.column,
+          record.relation,
+          record.operation,
+          record.queryKey.id,
+          record.queryKey.display,
+          record.queryKey.matchMode,
+          record.queryKey.resolution,
+          record.queryKey.source,
+          record.resolution,
+          record.clientScopeId ?? '',
+          record.executionScopeId ?? '',
+          record.suiteScopeId ?? '',
+          record.declaresDirectly === true ? '1' : '0',
+        ].join('|');
+
+        if (seenRecords.has(dedupeKey)) {
+          continue;
+        }
+
+        seenRecords.add(dedupeKey);
+        acc.records.push(record);
+      }
+
       acc.scannedFiles.push(...current.scannedFiles);
       acc.parseErrors.push(...current.parseErrors);
       acc.filesScanned += current.filesScanned;
@@ -74,6 +101,7 @@ function buildScannedFiles(
 ): ScannedFile[] {
   const multiRoot = targets.length > 1;
   const scannedFiles: ScannedFile[] = [];
+  const seenPaths = new Set<string>();
 
   analyses.forEach((analysis, index) => {
     const target = targets[index];
@@ -83,6 +111,11 @@ function buildScannedFiles(
 
     const workspaceName = target.workspace.name;
     analysis.scannedFiles.forEach((absolutePath) => {
+      if (seenPaths.has(absolutePath)) {
+        return;
+      }
+
+      seenPaths.add(absolutePath);
       const relativePath = normalizeRelativePath(target.workspace.uri.fsPath, absolutePath);
       const depth = computeDepth(relativePath);
       scannedFiles.push({
@@ -151,7 +184,7 @@ export async function scanAndPublish({
     await persistScanScope(scope);
   }
 
-  const panel = GraphPanel.createOrShow(context.extensionUri);
+  const panel = GraphPanel.createOrShow(context.extensionUri, getLayoutConfig());
 
   const result = await vscode.window.withProgress(
     {

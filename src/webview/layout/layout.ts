@@ -16,6 +16,8 @@ const TITLE_CHARS_PER_LINE = 24;
 const SUBTITLE_CHARS_PER_LINE = 32;
 const SOURCE_POSITION = 'right' as Position;
 const TARGET_POSITION = 'left' as Position;
+const DENSE_GRAPH_EDGE_THRESHOLD = 3000;
+const DENSE_GRAPH_EDGE_RATIO = 8;
 
 function estimateWrappedLineCount(text: string, charsPerLine: number): number {
   if (!text) {
@@ -59,11 +61,68 @@ function nodeKind(node: Node): 'file' | 'action' | 'queryKey' | null {
   return null;
 }
 
+function nodeProjectScope(node: Node): string {
+  const data = node.data as FlowNodeData | undefined;
+  const projectScope = data?.node?.metrics?.projectScope;
+  return typeof projectScope === 'string' && projectScope.length > 0 ? projectScope : 'workspace:*';
+}
+
+function getDenseGraphLayout(nodes: Node[], edges: Edge[], options: LayoutOptions): { nodes: Node[]; edges: Edge[] } {
+  const columnGap = Math.max(200, Math.round(options.horizontalSpacing * 0.6));
+  const projectGap = Math.max(240, Math.round(options.horizontalSpacing * 0.75));
+  const rowGap = Math.max(24, options.verticalSpacing);
+  const laneByKind: Record<'file' | 'action' | 'queryKey', number> = {
+    file: 0,
+    action: NODE_WIDTH + columnGap,
+    queryKey: NODE_WIDTH * 2 + columnGap * 2,
+  };
+
+  let cursorY = 40;
+  let previousProjectScope: string | null = null;
+
+  const positionedNodes = nodes.map((node) => {
+    const currentProjectScope = nodeProjectScope(node);
+    if (previousProjectScope !== null && currentProjectScope !== previousProjectScope) {
+      cursorY += projectGap;
+    }
+    previousProjectScope = currentProjectScope;
+
+    const kind = nodeKind(node);
+    const height = estimateNodeHeight(node);
+    const width = NODE_WIDTH;
+    const x = kind ? laneByKind[kind] : laneByKind.action;
+    const positioned = {
+      ...node,
+      width,
+      height,
+      sourcePosition: SOURCE_POSITION,
+      targetPosition: TARGET_POSITION,
+      position: {
+        x,
+        y: cursorY,
+      },
+    };
+
+    cursorY += height + rowGap;
+    return positioned;
+  });
+
+  return {
+    nodes: positionedNodes,
+    edges,
+  };
+}
+
 export function getLayoutedElements(
   nodes: Node[],
   edges: Edge[],
   options: LayoutOptions,
 ): { nodes: Node[]; edges: Edge[] } {
+  const edgeThreshold = Math.max(DENSE_GRAPH_EDGE_THRESHOLD, nodes.length * DENSE_GRAPH_EDGE_RATIO);
+  if (edges.length > edgeThreshold) {
+    return getDenseGraphLayout(nodes, edges, options);
+  }
+
   const graph = new dagre.graphlib.Graph();
   graph.setDefaultEdgeLabel(() => ({}));
   graph.setGraph({

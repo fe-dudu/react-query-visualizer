@@ -2,7 +2,7 @@ import { type Dispatch, type SetStateAction, useEffect, useMemo, useState } from
 
 import { LeftPanelQueryKeys } from './LeftPanelQueryKeys';
 import { LeftPanelRelatedFiles } from './LeftPanelRelatedFiles';
-import type { OperationRelation, ScannedFile } from '../types/model';
+import type { OperationRelation, ScannedFile } from '../../shared/contracts';
 import type { FilterState } from '../types/viewTypes';
 import { OPERATION_RELATIONS, RELATION_COLOR, RELATION_LABEL } from '../utils/constants';
 import {

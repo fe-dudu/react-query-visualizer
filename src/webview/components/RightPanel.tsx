@@ -1,4 +1,4 @@
-import type { GraphNode } from '../types/model';
+import type { GraphNode } from '../../shared/contracts';
 import type { NodeCallsite, NodeExplanation, NodeFileRef } from '../types/viewTypes';
 import { isDeclareActionNode, nodeFileDisplay } from '../utils/utils';
 

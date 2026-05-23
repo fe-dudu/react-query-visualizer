@@ -1,4 +1,4 @@
-import type { GraphNode, GraphRelation, OperationRelation } from './model';
+import type { GraphNode, GraphRelation, OperationRelation } from '../../shared/contracts';
 
 export interface FilterState {
   relation: Record<OperationRelation, boolean>;

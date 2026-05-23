@@ -2,7 +2,7 @@ import type { Node } from '@xyflow/react';
 
 import { getGraphLayoutIndex } from './layoutIndex';
 import { fileImpactForNode, orderWeightForNode, projectKeyForNode, queryImpactForNode } from './layoutNodeMetrics';
-import type { WebviewPayload } from '../types/model';
+import type { WebviewPayload } from '../../shared/contracts';
 import { isDeclareActionNode } from '../utils/utils';
 
 export function orderNodesForLayout(

@@ -1,5 +1,5 @@
 import { vscode } from './vscode';
-import type { GraphNode } from '../types/model';
+import type { GraphNode } from '../../shared/contracts';
 import type { NodeCallsite, NodeFileRef } from '../types/viewTypes';
 
 export function revealNodeInCode(node: GraphNode): void {
