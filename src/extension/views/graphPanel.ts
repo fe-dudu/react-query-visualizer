@@ -1,6 +1,25 @@
 import * as vscode from 'vscode';
 
-import type { LayoutConfig, WebviewPayload } from '../../shared/types';
+import type { LayoutConfig, WebviewPayload } from '../../shared/contracts';
+
+function createDefaultPayload(layout: LayoutConfig): WebviewPayload {
+  return {
+    graph: {
+      nodes: [],
+      edges: [],
+      summary: {
+        files: 0,
+        actions: 0,
+        queryKeys: 0,
+        parseErrors: 0,
+      },
+      parseErrors: [],
+    },
+    scannedFiles: [],
+    scopeLabel: 'No scan has run yet',
+    layout,
+  };
+}
 
 function nonce(): string {
   const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
@@ -14,7 +33,7 @@ function nonce(): string {
 export class GraphPanel {
   private static current: GraphPanel | undefined;
 
-  static createOrShow(extensionUri: vscode.Uri): GraphPanel {
+  static createOrShow(extensionUri: vscode.Uri, layout: LayoutConfig): GraphPanel {
     if (GraphPanel.current) {
       GraphPanel.current.panel.reveal(vscode.ViewColumn.One);
       return GraphPanel.current;
@@ -26,7 +45,7 @@ export class GraphPanel {
       localResourceRoots: [vscode.Uri.joinPath(extensionUri, 'dist')],
     });
 
-    GraphPanel.current = new GraphPanel(panel, extensionUri);
+    GraphPanel.current = new GraphPanel(panel, extensionUri, layout);
     return GraphPanel.current;
   }
 
@@ -40,9 +59,10 @@ export class GraphPanel {
   private latestPayload?: WebviewPayload;
   private isReady = false;
 
-  private constructor(panel: vscode.WebviewPanel, extensionUri: vscode.Uri) {
+  private constructor(panel: vscode.WebviewPanel, extensionUri: vscode.Uri, layout: LayoutConfig) {
     this.panel = panel;
     this.extensionUri = extensionUri;
+    this.latestPayload = createDefaultPayload(layout);
     this.panel.webview.html = this.renderHtml();
     this.themeChangeListener = vscode.window.onDidChangeActiveColorTheme(() => {
       this.postTheme();
@@ -136,23 +156,4 @@ export class GraphPanel {
   </body>
 </html>`;
   }
-}
-
-export function getDefaultPayload(layout: LayoutConfig): WebviewPayload {
-  return {
-    graph: {
-      nodes: [],
-      edges: [],
-      summary: {
-        files: 0,
-        actions: 0,
-        queryKeys: 0,
-        parseErrors: 0,
-      },
-      parseErrors: [],
-    },
-    scannedFiles: [],
-    scopeLabel: 'No scan has run yet',
-    layout,
-  };
 }

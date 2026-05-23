@@ -1,14 +1,5 @@
-import { inferProjectFromPath, makeProjectRelativePath, parseProjectScope } from './projectScope';
-import type { GraphNode, ScannedFile, WebviewPayload } from '../types/model';
-
-function depthFromPath(filePath: string): number {
-  const parts = filePath.split('/').filter(Boolean);
-  if (parts.length <= 1) {
-    return 0;
-  }
-
-  return parts.length - 1;
-}
+import type { GraphNode, ScannedFile, WebviewPayload } from '../../shared/contracts';
+import { depthFromPath, inferProjectFromPath, makeProjectRelativePath, parseProjectScope } from '../../shared/path';
 
 export function buildRelatedFiles(
   allScannedFiles: ScannedFile[],

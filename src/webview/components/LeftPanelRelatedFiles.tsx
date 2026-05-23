@@ -1,6 +1,6 @@
 import type { ReactElement } from 'react';
 
-import type { ScannedFile } from '../types/model';
+import type { ScannedFile } from '../../shared/contracts';
 import {
   type FileTreeDirectory,
   buildFileTree,

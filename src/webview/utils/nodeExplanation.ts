@@ -5,10 +5,77 @@ import {
   sortActionNodesByOperation,
   sortCallsites,
   sortFileRefs,
-} from './shared';
+} from './nodePresentation';
 import { isDeclareActionNode, nodeFileDisplay, shortText } from './utils';
-import type { GraphData, GraphNode } from '../types/model';
+import type { GraphData, GraphNode } from '../../shared/contracts';
 import type { NodeCallsite, NodeExplanation, NodeFileRef } from '../types/viewTypes';
+
+function queryNodeGroupKey(node: GraphNode): string {
+  const rootSegment = String(node.metrics?.rootSegment ?? node.label);
+  const projectScope = String(node.metrics?.projectScope ?? '');
+  return `${projectScope}::${rootSegment}`;
+}
+
+function collapseQueryNodes(queryNodes: GraphNode[]): GraphNode[] {
+  const grouped = new Map<string, GraphNode[]>();
+
+  for (const node of queryNodes) {
+    const key = queryNodeGroupKey(node);
+    const nodes = grouped.get(key);
+    if (nodes) {
+      nodes.push(node);
+      continue;
+    }
+
+    grouped.set(key, [node]);
+  }
+
+  return [...grouped.values()]
+    .map(
+      (nodes) =>
+        [...nodes].sort((left, right) => {
+          const lengthDiff = left.label.length - right.label.length;
+          if (lengthDiff !== 0) {
+            return lengthDiff;
+          }
+
+          const lineDiff = (left.loc?.line ?? Number.MAX_SAFE_INTEGER) - (right.loc?.line ?? Number.MAX_SAFE_INTEGER);
+          if (lineDiff !== 0) {
+            return lineDiff;
+          }
+
+          const columnDiff =
+            (left.loc?.column ?? Number.MAX_SAFE_INTEGER) - (right.loc?.column ?? Number.MAX_SAFE_INTEGER);
+          if (columnDiff !== 0) {
+            return columnDiff;
+          }
+
+          return left.label.localeCompare(right.label);
+        })[0] as GraphNode,
+    )
+    .sort((left, right) => left.label.localeCompare(right.label));
+}
+
+function sortActionNodesByLocation(actionNodes: GraphNode[]): GraphNode[] {
+  return [...actionNodes].sort((left, right) => {
+    const fileDiff = (left.file ?? '').localeCompare(right.file ?? '');
+    if (fileDiff !== 0) {
+      return fileDiff;
+    }
+
+    const lineDiff = (left.loc?.line ?? Number.MAX_SAFE_INTEGER) - (right.loc?.line ?? Number.MAX_SAFE_INTEGER);
+    if (lineDiff !== 0) {
+      return lineDiff;
+    }
+
+    const columnDiff = (left.loc?.column ?? Number.MAX_SAFE_INTEGER) - (right.loc?.column ?? Number.MAX_SAFE_INTEGER);
+    if (columnDiff !== 0) {
+      return columnDiff;
+    }
+
+    return left.label.localeCompare(right.label);
+  });
+}
 
 function buildExplanationForFile(
   graph: GraphData,
@@ -20,7 +87,7 @@ function buildExplanationForFile(
   const actionNodes = outgoingEdges
     .map((edge) => nodeById.get(edge.target))
     .filter((node): node is GraphNode => Boolean(node && node.kind === 'action'));
-  const sortedActionNodes = sortActionNodesByOperation(actionNodes);
+  const sortedActionNodes = sortActionNodesByLocation(actionNodes);
 
   const relationCounts = new Map<string, number>();
   for (const node of sortedActionNodes) {
@@ -28,20 +95,21 @@ function buildExplanationForFile(
     relationCounts.set(relation, (relationCounts.get(relation) ?? 0) + 1);
   }
 
-  const queryKeys = new Set<string>();
+  const queryNodes: GraphNode[] = [];
   for (const actionNode of sortedActionNodes) {
     for (const edge of graph.edges.filter((item) => item.source === actionNode.id)) {
       const queryNode = nodeById.get(edge.target);
       if (queryNode?.kind === 'queryKey') {
-        queryKeys.add(queryNode.label);
+        queryNodes.push(queryNode);
       }
     }
   }
+  const relatedQueryNodes = collapseQueryNodes(queryNodes);
 
   const relationText = [...relationCounts.entries()].map(([key, count]) => `${key}:${count}`).join(', ');
 
   return {
-    summary: `${shortText(selectedNode.label, 80)} contains ${sortedActionNodes.length} callsites (${relationText || 'none'}) and links ${queryKeys.size} query keys.`,
+    summary: `${shortText(selectedNode.label, 80)} contains ${sortedActionNodes.length} callsites (${relationText || 'none'}) and links ${relatedQueryNodes.length} query keys.`,
     files: [
       fileRef(
         selectedNode.label,
@@ -52,7 +120,7 @@ function buildExplanationForFile(
     ],
     actions: sortedActionNodes.map((node) => actionLabel(node)),
     declarations: [],
-    queryKeys: [...queryKeys].sort((a, b) => a.localeCompare(b)),
+    queryKeys: filterActionQueryLabels(relatedQueryNodes.map((node) => node.label)),
   };
 }
 
@@ -71,6 +139,7 @@ function buildExplanationForAction(
   const queryNodes = outgoingEdges
     .map((edge) => nodeById.get(edge.target))
     .filter((node): node is GraphNode => Boolean(node && node.kind === 'queryKey'));
+  const relatedQueryNodes = collapseQueryNodes(queryNodes);
 
   const relation = String(selectedNode.metrics?.relation ?? 'action');
   const loc = selectedNode.loc ? `${selectedNode.loc.line}:${selectedNode.loc.column}` : '-';
@@ -78,11 +147,11 @@ function buildExplanationForAction(
   const filePath = fileNode?.label ?? selectedNode.file ?? fileLabel;
 
   return {
-    summary: `${relation} call from ${shortText(fileLabel, 72)} @ ${loc}, affecting ${queryNodes.length} query keys.`,
+    summary: `${relation} call from ${shortText(fileLabel, 72)} @ ${loc}, affecting ${relatedQueryNodes.length} query keys.`,
     files: fileLabel ? [fileRef(fileLabel, filePath)] : [],
     actions: [actionLabel(selectedNode)],
     declarations: [],
-    queryKeys: filterActionQueryLabels(queryNodes.map((node) => node.label)),
+    queryKeys: filterActionQueryLabels(relatedQueryNodes.map((node) => node.label)),
   };
 }
 

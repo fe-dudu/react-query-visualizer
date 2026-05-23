@@ -1,10 +1,10 @@
 import type { Node } from '@xyflow/react';
 
 import { isDeclareActionNode } from './utils';
+import type { GraphNode, WebviewPayload } from '../../shared/contracts';
 import { getGraphLayoutIndex } from '../layout/layoutIndex';
 import { compareActionOrder, fileImpactForNode, projectKeyForNode } from '../layout/layoutNodeMetrics';
 import { DEFAULT_NODE_HEIGHT, FILE_ACTION_PROJECT_GAP, resolveVerticalRowGap } from '../layout/spacing';
-import type { GraphNode, WebviewPayload } from '../types/model';
 
 export function alignFileActionGroups(nodes: Node[], graph: WebviewPayload['graph'], verticalSpacing: number): Node[] {
   const { nodeById: graphNodeById, queryProjectById } = getGraphLayoutIndex(graph);

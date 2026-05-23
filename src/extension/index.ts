@@ -2,11 +2,11 @@ import * as vscode from 'vscode';
 
 import { revealInCode } from './commands/reveal';
 import { RqvActivityViewProvider } from './views/activityView';
-import { GraphPanel, getDefaultPayload } from './views/graphPanel';
+import { GraphPanel } from './views/graphPanel';
 import { getDefaultScopeWorkspace, getWorkspaceFolders } from './workspace/folders';
 import { getLayoutConfig, getScanScopeConfig } from '../core/workspace/config';
 import { promptScope } from '../core/workspace/scope';
-import type { WebviewPayload } from '../shared/types';
+import type { WebviewPayload } from '../shared/contracts';
 
 let latestPayload: WebviewPayload | undefined;
 let activityViewProvider: RqvActivityViewProvider | undefined;
@@ -49,12 +49,13 @@ export function activate(context: vscode.ExtensionContext): void {
   });
 
   const openPanel = vscode.commands.registerCommand('rqv.openGraphPanel', () => {
-    const panel = GraphPanel.createOrShow(context.extensionUri);
-    const payload = latestPayload ?? getDefaultPayload(getLayoutConfig());
+    const panel = GraphPanel.createOrShow(context.extensionUri, getLayoutConfig());
     if (latestPayload) {
       activityViewProvider?.updateFromPayload(latestPayload);
     }
-    panel.update(payload);
+    if (latestPayload) {
+      panel.update(latestPayload);
+    }
   });
 
   const scanNow = vscode.commands.registerCommand('rqv.scanNow', async () => {

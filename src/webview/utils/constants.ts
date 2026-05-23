@@ -1,4 +1,4 @@
-import type { GraphData, GraphNode, GraphRelation, OperationRelation, WebviewPayload } from '../types/model';
+import type { GraphNode, GraphRelation, OperationRelation } from '../../shared/contracts';
 
 export const RELATION_LABEL: Record<GraphRelation, string> = {
   declares: 'Declare',
@@ -53,30 +53,6 @@ export const NODE_SURFACE_CLASS: Record<VisualNodeKind, string> = {
   action: 'bg-zinc-100 border-zinc-400 dark:bg-zinc-900 dark:border-zinc-700',
   queryKey: 'bg-zinc-200 border-zinc-400 dark:bg-zinc-800 dark:border-zinc-600',
   declare: 'bg-zinc-50 border-zinc-400 dark:bg-zinc-900 dark:border-zinc-500',
-};
-
-export const EMPTY_GRAPH: GraphData = {
-  nodes: [],
-  edges: [],
-  summary: {
-    files: 0,
-    actions: 0,
-    queryKeys: 0,
-    parseErrors: 0,
-  },
-  parseErrors: [],
-};
-
-export const defaultPayload: WebviewPayload = {
-  graph: EMPTY_GRAPH,
-  scannedFiles: [],
-  scopeLabel: 'No scan has run yet',
-  layout: {
-    direction: 'LR',
-    engine: 'dagre',
-    verticalSpacing: 30,
-    horizontalSpacing: 500,
-  },
 };
 
 export const MIN_LEFT_PANEL = 220;
