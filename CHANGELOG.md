@@ -1,5 +1,11 @@
 # react-query-visualizer
 
+## 0.0.6
+
+### Patch Changes
+
+- [#15](https://github.com/fe-dudu/react-query-visualizer/pull/15) [`e40b95b`](https://github.com/fe-dudu/react-query-visualizer/commit/e40b95b9714eb61264085dba6de60b56b79be53f) Thanks [@fe-dudu](https://github.com/fe-dudu)! - Improve parser accuracy and webview graph rendering.
+
 ## 0.0.5
 
 ### Patch Changes
