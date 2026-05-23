@@ -1,9 +1,9 @@
 import type { BuiltInEdge, Edge, Node } from '@xyflow/react';
 
 import { RELATION_COLOR, SHARED_SOURCE_HANDLE_ID, SHARED_TARGET_HANDLE_ID } from './constants';
-import { type HighlightState, nodeMatchesSearch } from './shared';
+import { type HighlightState, nodeMatchesSearch } from './nodePresentation';
 import { nodeFileDisplay } from './utils';
-import type { GraphData, GraphEdge, GraphNode, GraphRelation } from '../types/model';
+import type { GraphData, GraphEdge, GraphNode, GraphRelation } from '../../shared/contracts';
 import type { FlowEdgeData, FlowNodeData } from '../types/viewTypes';
 
 const EDGE_FLOW_DASH = '18 14';

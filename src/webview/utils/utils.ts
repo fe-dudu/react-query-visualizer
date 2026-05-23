@@ -1,4 +1,4 @@
-import type { GraphNode } from '../types/model';
+import type { GraphNode } from '../../shared/contracts';
 
 export function clamp(value: number, min: number, max: number): number {
   return Math.min(max, Math.max(min, value));

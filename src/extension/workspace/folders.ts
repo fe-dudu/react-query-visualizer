@@ -1,7 +1,7 @@
 import * as path from 'node:path';
 import * as vscode from 'vscode';
 
-import type { ScanScope } from '../../shared/types';
+import type { ScanScope } from '../../shared/contracts';
 
 export function getWorkspaceFolders(): vscode.WorkspaceFolder[] {
   return [...(vscode.workspace.workspaceFolders ?? [])];

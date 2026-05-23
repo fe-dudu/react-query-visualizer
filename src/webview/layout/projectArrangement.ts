@@ -9,8 +9,8 @@ import {
   MONOREPO_PROJECT_ROW_GAP,
   PROJECT_COLUMN_GAP,
 } from './spacing';
-import type { WebviewPayload } from '../types/model';
-import { parseProjectScope } from '../utils/projectScope';
+import type { WebviewPayload } from '../../shared/contracts';
+import { parseProjectScope } from '../../shared/path';
 
 export function isMonorepoGraph(graph: WebviewPayload['graph']): boolean {
   const packageScopedProjects = new Set<string>();

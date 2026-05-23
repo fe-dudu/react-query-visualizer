@@ -1,4 +1,4 @@
-import type { WebviewPayload } from '../types/model';
+import type { WebviewPayload } from '../../shared/contracts';
 
 export interface HighlightState {
   highlightedNodeIds: Set<string>;

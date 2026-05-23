@@ -1,6 +1,12 @@
 import * as vscode from 'vscode';
 
-import type { WebviewPayload } from '../../shared/types';
+import type { WebviewPayload } from '../../shared/contracts';
+import {
+  inferProjectFromPath,
+  makeProjectRelativePath,
+  normalizePathSegments,
+  parseProjectScope,
+} from '../../shared/path';
 
 interface LastScanSummary {
   parseErrors: number;
@@ -60,81 +66,6 @@ interface RelatedFileNode {
     projectRelativePath: string;
     absolutePath?: string;
   }>;
-}
-
-function normalizePathSegments(input: string): string[] {
-  return input.split('/').filter(Boolean);
-}
-
-function stripWorkspacePrefix(filePath: string, workspace: string): string {
-  if (!workspace) {
-    return filePath;
-  }
-
-  const prefix = `${workspace}/`;
-  if (!filePath.startsWith(prefix)) {
-    return filePath;
-  }
-
-  return filePath.slice(prefix.length);
-}
-
-function parseProjectScope(metricScope: unknown): { root: string; project: string } | null {
-  if (typeof metricScope !== 'string') {
-    return null;
-  }
-
-  const colonIndex = metricScope.indexOf(':');
-  if (colonIndex < 0) {
-    const normalized = metricScope.trim();
-    if (!normalized) {
-      return null;
-    }
-
-    return { root: '', project: normalized };
-  }
-
-  const root = metricScope.slice(0, colonIndex).trim();
-  const suffix = metricScope.slice(colonIndex + 1).trim();
-  if (!suffix || suffix === '.' || suffix === '*') {
-    return { root, project: root || 'workspace' };
-  }
-
-  return { root, project: suffix };
-}
-
-function inferProjectFromPath(filePath: string, workspace: string): string {
-  const scopedPath = stripWorkspacePrefix(filePath, workspace);
-  const segments = normalizePathSegments(scopedPath);
-  if (segments.length >= 2) {
-    return `${segments[0]}/${segments[1]}`;
-  }
-  if (segments.length === 1) {
-    return segments[0];
-  }
-
-  return workspace || 'workspace';
-}
-
-function projectRelativePath(filePath: string, workspace: string, project: string): string {
-  const scopedPath = stripWorkspacePrefix(filePath, workspace);
-  const pathSegments = normalizePathSegments(scopedPath);
-  const projectSegments = normalizePathSegments(project);
-
-  if (pathSegments.length === 0) {
-    return filePath;
-  }
-
-  const matchesPrefix =
-    projectSegments.length > 0 &&
-    projectSegments.every((segment, index) => pathSegments[index] && pathSegments[index] === segment);
-
-  if (!matchesPrefix) {
-    return scopedPath;
-  }
-
-  const remainder = pathSegments.slice(projectSegments.length).join('/');
-  return remainder || pathSegments[pathSegments.length - 1] || scopedPath;
 }
 
 function buildRelatedFilesTree(
@@ -277,7 +208,7 @@ function createRelatedFilesRoot(payload: WebviewPayload): ActivityNode {
         const workspace = workspaceByPath.get(node.label) ?? '';
         const parsedScope = parseProjectScope(node.metrics?.projectScope);
         const baseProject = parsedScope?.project ?? inferProjectFromPath(node.label, workspace);
-        return projectRelativePath(node.label, workspace, baseProject);
+        return makeProjectRelativePath(node.label, workspace, baseProject);
       })(),
       absolutePath: node.file,
     }))

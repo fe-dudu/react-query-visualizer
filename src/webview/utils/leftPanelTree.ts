@@ -1,4 +1,5 @@
-import type { ScannedFile } from '../types/model';
+import type { ScannedFile } from '../../shared/contracts';
+import { normalizePathSegments } from '../../shared/path';
 
 export interface FileTreeDirectory {
   name: string;
@@ -6,10 +7,6 @@ export interface FileTreeDirectory {
   impact: number;
   directories: Map<string, FileTreeDirectory>;
   files: ScannedFile[];
-}
-
-function normalizePathSegments(input: string): string[] {
-  return input.split('/').filter(Boolean);
 }
 
 export function buildFileTree(relatedFiles: ScannedFile[]): FileTreeDirectory {

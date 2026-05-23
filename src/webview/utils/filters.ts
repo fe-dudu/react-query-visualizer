@@ -1,6 +1,6 @@
-import { isOperationRelation, nodeMatchesSearch, summarizeVisibleGraph } from './shared';
+import { isOperationRelation, nodeMatchesSearch, summarizeVisibleGraph } from './nodePresentation';
 import { nodeFileDisplay } from './utils';
-import type { GraphData, GraphEdge, GraphNode } from '../types/model';
+import type { GraphData, GraphEdge, GraphNode } from '../../shared/contracts';
 import type { FilterState } from '../types/viewTypes';
 
 function updateAllowedIdsForMatchedActions(

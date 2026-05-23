@@ -20,27 +20,25 @@ import { LeftPanel } from './LeftPanel';
 import { ProjectDividerNode } from './ProjectDividerNode';
 import { ResizeDivider } from './ResizeDivider';
 import { RightPanel } from './RightPanel';
+import type { WebviewPayload } from '../../shared/contracts';
 import { collapseGraphIfLarge } from '../layout/collapseGraphIfLarge';
 import { applyEdgeGeometryLanes, minimumNodeY } from '../layout/edgeGeometry';
 import { type LayoutOptions, getLayoutedElements } from '../layout/layout';
 import { getGraphLayoutIndex } from '../layout/layoutIndex';
+import { orderNodesForLayout } from '../layout/layoutOrdering';
+import { arrangeProjectsHorizontally, isMonorepoGraph } from '../layout/projectArrangement';
+import { applyProjectBandSpacing, buildProjectDividerNodes } from '../layout/projectDividers';
 import {
   alignDeclareNodesLeftOfQuery,
-  alignFileActionGroups,
   alignQueryNodesNearSources,
   alignQueryNodesToRightColumn,
-  applyProjectBandSpacing,
-  arrangeProjectsHorizontally,
-  isMonorepoGraph,
-  orderNodesForLayout,
-} from '../layout/layoutTransforms';
-import { buildProjectDividerNodes } from '../layout/projectDividers';
+} from '../layout/queryAlignment';
 import { clampHorizontalSpacing, clampVerticalSpacing } from '../layout/spacing';
 import { useDagreLayoutWorker } from '../layout/useDagreLayoutWorker';
 import { useResizablePanels } from '../layout/useResizablePanels';
-import type { WebviewPayload } from '../types/model';
 import type { FilterState, FlowEdgeData } from '../types/viewTypes';
 import { defaultFilters } from '../utils/defaultFilters';
+import { alignFileActionGroups } from '../utils/fileActionGroups';
 import { applySearchFilter, computeVisibleGraph } from '../utils/filters';
 import { buildFlowGraph } from '../utils/flowGraph';
 import { buildNodeExplanation } from '../utils/nodeExplanation';
