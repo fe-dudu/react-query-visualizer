@@ -3,7 +3,7 @@ import * as vscode from 'vscode';
 
 import { getScanScopeConfig } from './config';
 import { DEFAULT_EXCLUDE, DEFAULT_INCLUDE } from './glob';
-import type { ScanScope } from '../../shared/types';
+import type { ScanScope } from '../../shared/contracts';
 
 function toRelativeFolder(rootPath: string, absolutePath: string): string {
   const rel = path.relative(rootPath, absolutePath);

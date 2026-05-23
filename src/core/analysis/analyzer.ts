@@ -1,12 +1,12 @@
-import type * as t from '@babel/types';
 import { promises as fs } from 'node:fs';
 
+import type * as t from './ast';
 import { scanCalls, scanImports, scanLocalBindings } from './astScan';
 import { createParseContext } from './context';
 import { createQueryKeyResolver, resetResolverCache } from './resolver';
 import { parseSource } from './sourceParser';
 import { buildSymbolIndex, normalizeAnalyzerPath } from './symbols';
-import type { AnalysisResult, QueryRecord, ScanScope } from '../../shared/types';
+import type { AnalysisResult, QueryRecord, ScanScope } from '../../shared/contracts';
 import { collectFiles as collectFilesInternal } from '../workspace/fileCollection';
 
 async function parseFiles(files: string[]): Promise<{

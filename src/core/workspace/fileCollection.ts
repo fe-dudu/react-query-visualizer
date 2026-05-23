@@ -3,7 +3,7 @@ import * as path from 'node:path';
 import fg from 'fast-glob';
 
 import { parseGlobPatterns } from './glob';
-import type { ScanScope } from '../../shared/types';
+import type { ScanScope } from '../../shared/contracts';
 
 function normalizeFolderInput(input: string): string {
   if (!input || input === '.') {

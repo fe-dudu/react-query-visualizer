@@ -1,16 +1,18 @@
 import { existsSync, readFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import * as path from 'node:path';
-import * as t from '@babel/types';
 import fg from 'fast-glob';
 
 import type { ImportBinding, QueryKeyResolver, SymbolIndex } from './types';
+import * as t from './ast';
 import { parseSource } from './sourceParser';
 import { buildFileSymbols, extractFunctionReturnExpression, normalizeAnalyzerPath, unwrapExpression } from './symbols';
 
 const RESOLVE_EXTENSIONS = ['.ts', '.tsx', '.js', '.jsx', '.mts', '.cts', '.mjs', '.cjs'];
 const MAX_DEPTH = 24;
-const NODE_REQUIRE = createRequire(__filename);
+const NODE_REQUIRE = createRequire(
+  typeof __filename === 'string' && __filename ? __filename : path.join(process.cwd(), 'resolver.cjs'),
+);
 
 interface ResolvedPathAliases {
   baseUrlAbs?: string;
@@ -473,6 +475,18 @@ function firstExpressionArgument(args: t.CallExpression['arguments']): t.Express
   return unwrapExpression(first);
 }
 
+function callCalleeName(callee: t.CallExpression['callee']): string | undefined {
+  if (t.isIdentifier(callee)) {
+    return callee.name;
+  }
+
+  if (t.isMemberExpression(callee) && !callee.computed && t.isIdentifier(callee.property)) {
+    return callee.property.name;
+  }
+
+  return undefined;
+}
+
 function isObjectFreezeCall(callee: t.CallExpression['callee']): boolean {
   return (
     t.isMemberExpression(callee) &&
@@ -782,26 +796,9 @@ export function createQueryKeyResolver(filePath: string, index: SymbolIndex, wor
 
       expressionOrigins.set(current, originFile);
 
-      const visitorKeys = t.VISITOR_KEYS[current.type];
-      if (!visitorKeys) {
-        continue;
-      }
-
-      for (const key of visitorKeys) {
-        const value = (current as unknown as Record<string, unknown>)[key];
-        if (Array.isArray(value)) {
-          for (const nested of value) {
-            if (nested && typeof nested === 'object' && 'type' in nested) {
-              stack.push(nested as t.Node);
-            }
-          }
-          continue;
-        }
-
-        if (value && typeof value === 'object' && 'type' in value) {
-          stack.push(value as t.Node);
-        }
-      }
+      t.forEachNodeChild(current, (nested) => {
+        stack.push(nested);
+      });
     }
   };
 
@@ -1051,6 +1048,15 @@ export function createQueryKeyResolver(filePath: string, index: SymbolIndex, wor
       if (refreshedSymbols.mutableValues.has(localName)) {
         return undefined;
       }
+      if (t.isCallExpression(localValue)) {
+        const calleeName = callCalleeName(localValue.callee);
+        if (calleeName === 'ref' || calleeName === 'shallowRef') {
+          const firstArg = firstExpressionArgument(localValue.arguments);
+          if (firstArg) {
+            return markExpressionOrigin(unwrapExpression(firstArg), fromFile);
+          }
+        }
+      }
       if (t.isIdentifier(localValue) && localValue.name !== localName) {
         const resolvedAlias = resolveLocalValue(fromFile, localValue.name, depth + 1, seen) ?? localValue;
         return markExpressionOrigin(resolvedAlias, fromFile);
@@ -1125,6 +1131,338 @@ export function createQueryKeyResolver(filePath: string, index: SymbolIndex, wor
     }
 
     return resolveImportedFunctionReturn(fromFile, importBinding, depth + 1, seen);
+  };
+
+  const resolveLocalFunctionNode = (
+    fromFile: string,
+    localName: string,
+    depth: number,
+    seen: Set<string>,
+  ): t.FunctionDeclaration | t.FunctionExpression | t.ArrowFunctionExpression | undefined => {
+    if (depth > MAX_DEPTH) {
+      return undefined;
+    }
+
+    const key = `local-fn-node:${fromFile}:${localName}`;
+    if (seen.has(key)) {
+      return undefined;
+    }
+    seen.add(key);
+
+    const symbols = index.files.get(fromFile);
+    if (!symbols) {
+      ensureIndexedFile(fromFile);
+    }
+    const refreshedSymbols = index.files.get(fromFile);
+    if (!refreshedSymbols) {
+      return undefined;
+    }
+
+    const functionNode = refreshedSymbols.functionNodes.get(localName);
+    if (functionNode) {
+      return functionNode;
+    }
+
+    const localValue = refreshedSymbols.values.get(localName);
+    if (localValue) {
+      if (refreshedSymbols.mutableValues.has(localName)) {
+        return undefined;
+      }
+
+      if (t.isIdentifier(localValue) && localValue.name !== localName) {
+        return resolveLocalFunctionNode(fromFile, localValue.name, depth + 1, seen);
+      }
+
+      if (t.isFunctionExpression(localValue) || t.isArrowFunctionExpression(localValue)) {
+        return localValue;
+      }
+    }
+
+    return undefined;
+  };
+
+  function functionParameterNames(params: readonly unknown[]): string[] {
+    const names: string[] = [];
+
+    for (const param of params) {
+      if (typeof param === 'object' && param !== null && 'parameter' in param) {
+        const parameter = (param as { parameter?: unknown }).parameter;
+        if (t.isIdentifier(parameter)) {
+          names.push(parameter.name);
+        } else if (t.isAssignmentPattern(parameter) && t.isIdentifier(parameter.left)) {
+          names.push(parameter.left.name);
+        }
+        continue;
+      }
+
+      if (t.isIdentifier(param)) {
+        names.push(param.name);
+        continue;
+      }
+
+      if (t.isAssignmentPattern(param) && t.isIdentifier(param.left)) {
+        names.push(param.left.name);
+      }
+    }
+
+    return names;
+  }
+
+  function expressionContainsIdentifier(node: t.Expression, identifierName: string): boolean {
+    const stack: Array<{ node: t.Node; asReference: boolean }> = [{ node, asReference: true }];
+    while (stack.length > 0) {
+      const current = stack.pop();
+      if (!current) {
+        continue;
+      }
+
+      const { node: currentNode, asReference } = current;
+      if (asReference && t.isIdentifier(currentNode) && currentNode.name === identifierName) {
+        return true;
+      }
+
+      t.forEachNodeChild(currentNode, (child, key) => {
+        let childIsReference = asReference;
+        if (t.isObjectProperty(currentNode) && key === 'key' && !currentNode.computed) {
+          childIsReference = false;
+        }
+        if (t.isMemberExpression(currentNode) && key === 'property' && !currentNode.computed) {
+          childIsReference = false;
+        }
+        if (
+          (t.isFunctionExpression(currentNode) ||
+            t.isArrowFunctionExpression(currentNode) ||
+            t.isFunctionDeclaration(currentNode)) &&
+          key === 'params'
+        ) {
+          childIsReference = false;
+        }
+
+        stack.push({ node: child, asReference: childIsReference });
+      });
+    }
+
+    return false;
+  }
+
+  function substituteIdentifierInExpression(
+    expression: t.Expression,
+    identifierName: string,
+    replacement: t.Expression,
+  ): t.Expression {
+    const replaceExpression = (node: t.Expression): t.Expression => {
+      if (t.isIdentifier(node)) {
+        if (node.name === identifierName) {
+          return t.cloneNode(replacement, true);
+        }
+        return node;
+      }
+
+      if (t.isArrayExpression(node)) {
+        const cloned = t.cloneNode(node, false);
+        cloned.elements = cloned.elements.map((element) => {
+          if (!element) {
+            return null;
+          }
+
+          if (t.isSpreadElement(element)) {
+            if (!t.isExpression(element.argument)) {
+              return t.cloneNode(element, true);
+            }
+            return t.spreadElement(replaceExpression(element.argument));
+          }
+
+          return t.isExpression(element) ? replaceExpression(element) : t.cloneNode(element, true);
+        });
+        return cloned;
+      }
+
+      if (t.isObjectExpression(node)) {
+        const cloned = t.cloneNode(node, false);
+        cloned.properties = cloned.properties.map((property) => {
+          if (t.isSpreadElement(property)) {
+            if (!t.isExpression(property.argument)) {
+              return t.cloneNode(property, true);
+            }
+            return t.spreadElement(replaceExpression(property.argument));
+          }
+
+          if (t.isObjectProperty(property) && t.isExpression(property.value)) {
+            const nextValue = replaceExpression(property.value);
+            const next = {
+              ...t.cloneNode(property, false),
+              value: nextValue,
+            } as t.ObjectProperty;
+            return next;
+          }
+
+          return t.cloneNode(property, true);
+        });
+        return cloned;
+      }
+
+      if (t.isMemberExpression(node)) {
+        const cloned = t.cloneNode(node, false);
+        if (t.isExpression(cloned.object)) {
+          cloned.object = replaceExpression(cloned.object);
+        }
+        if (cloned.computed && t.isExpression(cloned.property)) {
+          cloned.property = replaceExpression(cloned.property);
+        }
+        return cloned;
+      }
+
+      if (t.isCallExpression(node)) {
+        const cloned = t.cloneNode(node, false);
+        if (t.isExpression(cloned.callee)) {
+          cloned.callee = replaceExpression(cloned.callee);
+        }
+        cloned.arguments = cloned.arguments.map((arg) => {
+          if (t.isSpreadElement(arg) && t.isExpression(arg.argument)) {
+            return t.spreadElement(replaceExpression(arg.argument));
+          }
+          return t.isExpression(arg) ? replaceExpression(arg) : t.cloneNode(arg, true);
+        });
+        return cloned;
+      }
+
+      if (t.isTemplateLiteral(node)) {
+        const cloned = t.cloneNode(node, false);
+        cloned.expressions = cloned.expressions.map((expr) =>
+          t.isExpression(expr) ? replaceExpression(expr) : t.cloneNode(expr, true),
+        );
+        return cloned;
+      }
+
+      if (t.isUnaryExpression(node) || t.isUpdateExpression(node)) {
+        const cloned = t.cloneNode(node, false);
+        if (t.isExpression(cloned.argument)) {
+          cloned.argument = replaceExpression(cloned.argument);
+        }
+        return cloned;
+      }
+
+      if (t.isBinaryExpression(node) || t.isLogicalExpression(node) || t.isAssignmentExpression(node)) {
+        const cloned = t.cloneNode(node, false);
+        if (t.isExpression(cloned.left)) {
+          cloned.left = replaceExpression(cloned.left);
+        }
+        if (t.isExpression(cloned.right)) {
+          cloned.right = replaceExpression(cloned.right);
+        }
+        return cloned;
+      }
+
+      if (t.isConditionalExpression(node)) {
+        const cloned = t.cloneNode(node, false);
+        cloned.test = replaceExpression(cloned.test);
+        cloned.consequent = replaceExpression(cloned.consequent);
+        cloned.alternate = replaceExpression(cloned.alternate);
+        return cloned;
+      }
+
+      if (t.isSequenceExpression(node)) {
+        const cloned = t.cloneNode(node, false);
+        cloned.expressions = cloned.expressions.map((expr) => replaceExpression(expr));
+        return cloned;
+      }
+
+      if (t.isParenthesizedExpression(node)) {
+        const cloned = t.cloneNode(node, false);
+        cloned.expression = replaceExpression(cloned.expression);
+        return cloned;
+      }
+
+      return t.cloneNode(node, true);
+    };
+
+    return replaceExpression(expression);
+  }
+
+  function applyFunctionArgumentHints(
+    fromFile: string,
+    callNode: t.CallExpression,
+    functionNode: t.FunctionDeclaration | t.FunctionExpression | t.ArrowFunctionExpression,
+    resolvedReturn: t.Expression,
+    depth: number,
+    seen: Set<string>,
+  ): t.Expression {
+    const paramNames = functionParameterNames(functionNode.params);
+    if (paramNames.length === 0) {
+      return resolvedReturn;
+    }
+
+    let nextExpression = resolvedReturn;
+    for (let index = 0; index < paramNames.length; index += 1) {
+      const arg = callNode.arguments[index];
+      if (!arg || t.isSpreadElement(arg) || !t.isExpression(arg)) {
+        continue;
+      }
+
+      const paramName = paramNames[index];
+      const replacement = resolveReferenceInternal(fromFile, arg, depth + 1, seen) ?? unwrapExpression(arg);
+      if (!expressionContainsIdentifier(nextExpression, paramName)) {
+        continue;
+      }
+
+      nextExpression = substituteIdentifierInExpression(nextExpression, paramName, replacement);
+    }
+
+    return nextExpression;
+  }
+
+  const resolveCallExpressionInternal = (
+    fromFile: string,
+    callNode: t.CallExpression,
+    depth: number,
+    seen: Set<string>,
+  ): t.Expression | undefined => {
+    if (depth > MAX_DEPTH) {
+      return undefined;
+    }
+
+    if (t.isIdentifier(callNode.callee)) {
+      const localFunctionNode = resolveLocalFunctionNode(fromFile, callNode.callee.name, depth + 1, seen);
+      if (localFunctionNode) {
+        const returned = extractFunctionReturnExpression(localFunctionNode);
+        if (returned) {
+          return applyFunctionArgumentHints(fromFile, callNode, localFunctionNode, returned, depth + 1, seen);
+        }
+      }
+    }
+
+    const resolvedReference = t.isExpression(callNode.callee)
+      ? resolveReferenceInternal(fromFile, callNode.callee, depth + 1, seen)
+      : undefined;
+    if (
+      resolvedReference &&
+      (t.isFunctionExpression(resolvedReference) ||
+        t.isArrowFunctionExpression(resolvedReference) ||
+        t.isFunctionDeclaration(resolvedReference))
+    ) {
+      const returned = extractFunctionReturnExpression(resolvedReference);
+      if (returned) {
+        return applyFunctionArgumentHints(fromFile, callNode, resolvedReference, returned, depth + 1, seen);
+      }
+    }
+
+    const resolved = resolveCallResultInternal(fromFile, callNode.callee, depth + 1, seen);
+    if (!resolved) {
+      return undefined;
+    }
+
+    if (
+      t.isFunctionExpression(resolved) ||
+      t.isArrowFunctionExpression(resolved) ||
+      t.isFunctionDeclaration(resolved)
+    ) {
+      const returned = extractFunctionReturnExpression(resolved);
+      if (returned) {
+        return applyFunctionArgumentHints(fromFile, callNode, resolved, returned, depth + 1, seen);
+      }
+    }
+
+    return resolved;
   };
 
   const resolveWorkspaceFunctionReturnByName = (fromFile: string, functionName: string): t.Expression | undefined => {
@@ -1282,15 +1620,50 @@ export function createQueryKeyResolver(filePath: string, index: SymbolIndex, wor
       return undefined;
     }
 
+    if (propertyName === 'value' && !t.isObjectExpression(resolvedObject) && !t.isCallExpression(resolvedObject)) {
+      return markExpressionOrigin(resolvedObject, fromFile);
+    }
+
     if (t.isObjectExpression(resolvedObject)) {
       return resolveObjectPropertyValue(fromFile, resolvedObject, propertyName, depth + 1, seen);
     }
 
     if (t.isCallExpression(resolvedObject)) {
+      const hintedCallResult = resolveCallExpressionInternal(fromFile, resolvedObject, depth + 1, seen);
+      if (hintedCallResult) {
+        if (t.isObjectExpression(hintedCallResult)) {
+          return resolveObjectPropertyValue(fromFile, hintedCallResult, propertyName, depth + 1, seen);
+        }
+
+        if (t.isArrayExpression(hintedCallResult)) {
+          const indexValue = Number.parseInt(propertyName, 10);
+          if (!Number.isFinite(indexValue) || indexValue < 0 || indexValue >= hintedCallResult.elements.length) {
+            return undefined;
+          }
+
+          const element = hintedCallResult.elements[indexValue];
+          if (!element || !t.isExpression(element)) {
+            return undefined;
+          }
+
+          return markExpressionOrigin(unwrapExpression(element), fromFile);
+        }
+      }
+
       if (propertyName === 'queryKey') {
         const fromCallArg = queryKeyPropertyFromCall(resolvedObject);
         if (fromCallArg) {
           return fromCallArg;
+        }
+      }
+
+      if (propertyName === 'value') {
+        const calleeName = callCalleeName(resolvedObject.callee);
+        if (calleeName === 'ref' || calleeName === 'shallowRef') {
+          const firstArg = firstExpressionArgument(resolvedObject.arguments);
+          if (firstArg) {
+            return markExpressionOrigin(unwrapExpression(firstArg), fromFile);
+          }
         }
       }
 

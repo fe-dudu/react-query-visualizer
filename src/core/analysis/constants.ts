@@ -1,4 +1,4 @@
-import type { QueryRecord } from '../../shared/types';
+import type { QueryRecord } from '../../shared/contracts';
 
 export type ParserPlugin =
   | 'typescript'

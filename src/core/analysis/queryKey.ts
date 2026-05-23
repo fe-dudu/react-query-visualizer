@@ -1,8 +1,7 @@
-import * as t from '@babel/types';
-
 import type { QueryKeyResolver, SegmentResult } from './types';
+import * as t from './ast';
 import { extractFunctionReturnExpression, unwrapExpression } from './symbols';
-import type { MatchMode, NormalizedQueryKey } from '../../shared/types';
+import type { MatchMode, NormalizedQueryKey } from '../../shared/contracts';
 
 const MAX_RESOLVE_DEPTH = 25;
 const MAX_HOOK_DIRECT_CHECK_DEPTH = 16;
@@ -173,6 +172,14 @@ function memoLikeCallReturnExpression(node: t.CallExpression): t.Expression | un
   }
 
   return firstArg;
+}
+
+function unwrapFunctionReturnExpression(expression: t.Expression): t.Expression | undefined {
+  if (t.isFunctionExpression(expression) || t.isArrowFunctionExpression(expression)) {
+    return extractFunctionReturnExpression(expression);
+  }
+
+  return undefined;
 }
 
 function objectPropertyKeySegment(
@@ -552,12 +559,7 @@ function expressionContainsIdentifier(node: t.Expression, identifierName: string
       return true;
     }
 
-    const visitorKeys = t.VISITOR_KEYS[currentNode.type];
-    if (!visitorKeys) {
-      continue;
-    }
-
-    for (const key of visitorKeys) {
+    t.forEachNodeChild(currentNode, (child, key) => {
       let childIsReference = asReference;
       if (t.isObjectProperty(currentNode) && key === 'key' && !currentNode.computed) {
         childIsReference = false;
@@ -574,20 +576,8 @@ function expressionContainsIdentifier(node: t.Expression, identifierName: string
         childIsReference = false;
       }
 
-      const value = (currentNode as unknown as Record<string, unknown>)[key];
-      if (Array.isArray(value)) {
-        for (const nested of value) {
-          if (nested && typeof nested === 'object' && 'type' in nested) {
-            stack.push({ node: nested as t.Node, asReference: childIsReference });
-          }
-        }
-        continue;
-      }
-
-      if (value && typeof value === 'object' && 'type' in value) {
-        stack.push({ node: value as t.Node, asReference: childIsReference });
-      }
-    }
+      stack.push({ node: child, asReference: childIsReference });
+    });
   }
 
   return false;
@@ -712,6 +702,112 @@ function applyObjectArgumentIdentifierHints(
   return nextExpression;
 }
 
+function functionParameterNames(params: readonly unknown[]): string[] {
+  const names: string[] = [];
+
+  for (const param of params) {
+    if (typeof param === 'object' && param !== null && 'parameter' in param) {
+      const parameter = (param as { parameter?: unknown }).parameter;
+      if (t.isIdentifier(parameter)) {
+        names.push(parameter.name);
+      } else if (t.isAssignmentPattern(parameter) && t.isIdentifier(parameter.left)) {
+        names.push(parameter.left.name);
+      }
+      continue;
+    }
+
+    if (t.isIdentifier(param)) {
+      names.push(param.name);
+      continue;
+    }
+
+    if (t.isAssignmentPattern(param) && t.isIdentifier(param.left)) {
+      names.push(param.left.name);
+    }
+  }
+
+  return names;
+}
+
+function applyFunctionArgumentHints(
+  callNode: t.CallExpression,
+  functionNode: t.FunctionDeclaration | t.FunctionExpression | t.ArrowFunctionExpression,
+  resolvedReturn: t.Expression,
+  resolver: QueryKeyResolver | undefined,
+  depth: number,
+): t.Expression {
+  const paramNames = functionParameterNames(functionNode.params);
+  if (paramNames.length === 0) {
+    return resolvedReturn;
+  }
+
+  let nextExpression = resolvedReturn;
+  for (let index = 0; index < paramNames.length; index += 1) {
+    const arg = callNode.arguments[index];
+    if (!arg || t.isSpreadElement(arg) || !t.isExpression(arg)) {
+      continue;
+    }
+
+    const paramName = paramNames[index];
+    const replacement = resolveQueryKeyExpression(arg, resolver, depth + 1) ?? unwrapExpression(arg);
+    if (!expressionContainsIdentifier(nextExpression, paramName)) {
+      continue;
+    }
+
+    nextExpression = substituteIdentifierInExpression(nextExpression, paramName, replacement);
+  }
+
+  return nextExpression;
+}
+
+function applyPositionalArgumentHints(
+  callNode: t.CallExpression,
+  resolvedCall: t.Expression,
+  resolver: QueryKeyResolver | undefined,
+  depth: number,
+): t.Expression {
+  if (!t.isArrayExpression(resolvedCall)) {
+    return resolvedCall;
+  }
+
+  const placeholderNames: string[] = [];
+  for (const element of resolvedCall.elements) {
+    if (!element || t.isSpreadElement(element) || !t.isExpression(element)) {
+      return resolvedCall;
+    }
+
+    const unwrapped = unwrapExpression(element);
+    if (!t.isIdentifier(unwrapped)) {
+      return resolvedCall;
+    }
+
+    placeholderNames.push(unwrapped.name);
+  }
+
+  if (placeholderNames.length === 0) {
+    return resolvedCall;
+  }
+
+  const nextExpression = t.cloneNode(resolvedCall, false);
+  let changed = false;
+  nextExpression.elements = resolvedCall.elements.map((element, index) => {
+    const arg = callNode.arguments[index];
+    if (!arg || t.isSpreadElement(arg) || !t.isExpression(arg)) {
+      return element ? t.cloneNode(element, true) : null;
+    }
+
+    const placeholderName = placeholderNames[index];
+    const replacement = resolveQueryKeyExpression(arg, resolver, depth + 1) ?? unwrapExpression(arg);
+    if (placeholderName) {
+      changed = true;
+    }
+
+    return t.cloneNode(replacement, true);
+  });
+
+  return changed ? nextExpression : resolvedCall;
+}
+
 function applyCallArgumentHints(
   callNode: t.CallExpression,
   resolvedCall: t.Expression,
@@ -789,7 +885,7 @@ function resolveActionOptionsObject(
   return undefined;
 }
 
-function resolveQueryKeyExpression(
+export function resolveQueryKeyExpression(
   node: t.Expression,
   resolver: QueryKeyResolver | undefined,
   depth = 0,
@@ -800,8 +896,15 @@ function resolveQueryKeyExpression(
 
   const unwrapped = unwrapExpression(node);
 
+  if (t.isIdentifier(unwrapped)) {
+    const resolvedReference = resolver?.resolveReference(unwrapped);
+    if (resolvedReference) {
+      return resolveQueryKeyExpression(resolvedReference, resolver, depth + 1) ?? resolvedReference;
+    }
+  }
+
   if (t.isObjectExpression(unwrapped)) {
-    const queryKey = findObjectPropertyValue(unwrapped, 'queryKey');
+    const queryKey = findObjectPropertyValue(unwrapped, 'queryKey', resolver);
     if (queryKey) {
       return resolveQueryKeyExpression(queryKey, resolver, depth + 1) ?? queryKey;
     }
@@ -809,6 +912,24 @@ function resolveQueryKeyExpression(
   }
 
   if (t.isCallExpression(unwrapped)) {
+    if (callCalleeName(unwrapped.callee) === 'createQueryKey') {
+      const resolvedCall = t.isExpression(unwrapped.callee) ? resolver?.resolveCallResult(unwrapped.callee) : undefined;
+      if (resolvedCall && t.isArrayExpression(resolvedCall)) {
+        const materialized = t.cloneNode(resolvedCall, false);
+        materialized.elements = resolvedCall.elements.map((element, index) => {
+          const arg = unwrapped.arguments[index];
+          if (!arg || t.isSpreadElement(arg) || !t.isExpression(arg)) {
+            return element ? t.cloneNode(element, true) : null;
+          }
+
+          const resolvedArg = resolveQueryKeyExpression(arg, resolver, depth + 1) ?? unwrapExpression(arg);
+          return t.cloneNode(resolvedArg, true);
+        });
+
+        return materialized;
+      }
+    }
+
     const firstArg = firstExpressionArgument(unwrapped.arguments);
     const resolvedFirstArg =
       firstArg && unwrapped.arguments.length === 1
@@ -817,7 +938,7 @@ function resolveQueryKeyExpression(
 
     if (firstArg && unwrapped.arguments.length === 1) {
       if (resolvedFirstArg && t.isObjectExpression(resolvedFirstArg)) {
-        const queryKey = findObjectPropertyValue(resolvedFirstArg, 'queryKey');
+        const queryKey = findObjectPropertyValue(resolvedFirstArg, 'queryKey', resolver);
         if (queryKey) {
           return resolveQueryKeyExpression(queryKey, resolver, depth + 1) ?? queryKey;
         }
@@ -830,8 +951,35 @@ function resolveQueryKeyExpression(
       }
     }
 
+    const resolvedReference = t.isExpression(unwrapped.callee)
+      ? resolver?.resolveReference(unwrapped.callee)
+      : undefined;
+    if (
+      resolvedReference &&
+      (t.isFunctionExpression(resolvedReference) ||
+        t.isArrowFunctionExpression(resolvedReference) ||
+        t.isFunctionDeclaration(resolvedReference))
+    ) {
+      const resolvedReturn = extractFunctionReturnExpression(resolvedReference);
+      if (resolvedReturn) {
+        const hintedReturn = applyFunctionArgumentHints(
+          unwrapped,
+          resolvedReference,
+          resolvedReturn,
+          resolver,
+          depth + 1,
+        );
+        return resolveQueryKeyExpression(hintedReturn, resolver, depth + 1) ?? hintedReturn;
+      }
+    }
+
     const resolvedCall = resolver?.resolveCallResult(unwrapped.callee);
     if (resolvedCall) {
+      const positionalHintedCall = applyPositionalArgumentHints(unwrapped, resolvedCall, resolver, depth + 1);
+      if (positionalHintedCall !== resolvedCall) {
+        return resolveQueryKeyExpression(positionalHintedCall, resolver, depth + 1) ?? positionalHintedCall;
+      }
+
       const hintedCall = applyCallArgumentHints(unwrapped, resolvedCall, resolver, depth + 1);
       return resolveQueryKeyExpression(hintedCall, resolver, depth + 1) ?? hintedCall;
     }
@@ -850,30 +998,38 @@ function resolveQueryKeyExpression(
     }
   }
 
-  if (t.isMemberExpression(unwrapped) && t.isObjectExpression(unwrapped.object)) {
-    const propertyName = propertyNameFromExpression(unwrapped.property, resolver, depth + 1);
-    if (!propertyName) {
-      return unwrapped;
-    }
-
-    const resolved = resolveObjectPropertyExpression(unwrapped.object, propertyName, resolver, depth + 1);
-    if (resolved) {
-      return resolveQueryKeyExpression(resolved, resolver, depth + 1) ?? resolved;
-    }
-  }
-
   if (t.isMemberExpression(unwrapped) && t.isExpression(unwrapped.object)) {
     const propertyName = propertyNameFromExpression(unwrapped.property, resolver, depth + 1);
     if (!propertyName) {
+      const resolvedReference = resolver?.resolveReference(unwrapped);
+      if (resolvedReference) {
+        return resolveQueryKeyExpression(resolvedReference, resolver, depth + 1) ?? resolvedReference;
+      }
       return unwrapped;
     }
 
+    if (t.isObjectExpression(unwrapped.object)) {
+      const resolved = resolveObjectPropertyExpression(unwrapped.object, propertyName, resolver, depth + 1);
+      if (resolved) {
+        return resolveQueryKeyExpression(resolved, resolver, depth + 1) ?? resolved;
+      }
+    }
+
     const resolvedObject = resolveQueryKeyExpression(unwrapped.object, resolver, depth + 1);
+    if (propertyName === 'queryKey' && resolvedObject && t.isArrayExpression(resolvedObject)) {
+      return resolvedObject;
+    }
+
     if (resolvedObject && t.isObjectExpression(resolvedObject)) {
       const resolved = resolveObjectPropertyExpression(resolvedObject, propertyName, resolver, depth + 1);
       if (resolved) {
         return resolveQueryKeyExpression(resolved, resolver, depth + 1) ?? resolved;
       }
+    }
+
+    const resolvedReference = resolver?.resolveReference(unwrapped);
+    if (resolvedReference) {
+      return resolveQueryKeyExpression(resolvedReference, resolver, depth + 1) ?? resolvedReference;
     }
   }
 
@@ -987,7 +1143,7 @@ function isPassThroughQueryInstanceReference(
   return isQueryCacheLookupCall(unwrapped, resolver, depth + 1);
 }
 
-function buildPassThroughActionKey(mode: MatchMode): NormalizedQueryKey {
+export function buildPassThroughActionKey(mode: MatchMode): NormalizedQueryKey {
   return {
     id: 'pass-through-query-key',
     display: '$queryKey',
@@ -1097,6 +1253,21 @@ export function segmentFromExpression(
     if (resolvedIdentifier) {
       const resolvedValue = unwrapExpression(resolvedIdentifier);
       if (t.isCallExpression(resolvedValue)) {
+        const calleeName = callCalleeName(resolvedValue.callee);
+        if (calleeName === 'ref' || calleeName === 'shallowRef') {
+          const firstArg = firstExpressionArgument(resolvedValue.arguments);
+          if (firstArg) {
+            return segmentFromExpression(firstArg, resolver, depth + 1);
+          }
+        }
+      }
+
+      if (t.isCallExpression(resolvedValue)) {
+        const callName = callCalleeName(resolvedValue.callee);
+        if (callName === 'useReducer' || callName === 'useState') {
+          return segmentFromExpression(resolvedValue, resolver, depth + 1);
+        }
+
         if (isMemoLikeCall(resolvedValue)) {
           return { text: `$${unwrapped.name}`, isStatic: false };
         }
@@ -1109,6 +1280,13 @@ export function segmentFromExpression(
       }
 
       if (t.isMemberExpression(resolvedValue) || t.isOptionalMemberExpression(resolvedValue)) {
+        if (t.isExpression(resolvedValue.object) && t.isCallExpression(resolvedValue.object)) {
+          const callName = callCalleeName(resolvedValue.object.callee);
+          if (callName === 'useReducer' || callName === 'useState') {
+            return segmentFromExpression(resolvedValue.object, resolver, depth + 1);
+          }
+        }
+
         return { text: `$${unwrapped.name}`, isStatic: false };
       }
 
@@ -1188,6 +1366,24 @@ export function segmentFromExpression(
   }
 
   if (t.isOptionalMemberExpression(unwrapped)) {
+    const propertyName = propertyNameFromExpression(unwrapped.property as t.Expression, resolver, depth + 1);
+    if (t.isExpression(unwrapped.object)) {
+      const resolvedObject =
+        resolveQueryKeyExpression(unwrapped.object, resolver, depth + 1) ?? unwrapExpression(unwrapped.object);
+      if (propertyName === 'queryKey' && t.isArrayExpression(resolvedObject)) {
+        return segmentFromExpression(resolvedObject, resolver, depth + 1);
+      }
+      if (t.isCallExpression(resolvedObject)) {
+        const calleeName = callCalleeName(resolvedObject.callee);
+        if (calleeName === 'ref' || calleeName === 'shallowRef') {
+          const firstArg = firstExpressionArgument(resolvedObject.arguments);
+          if (firstArg) {
+            return segmentFromExpression(firstArg, resolver, depth + 1);
+          }
+        }
+      }
+    }
+
     const object = segmentFromExpression(unwrapped.object as t.Expression, resolver, depth + 1);
     const inferredProperty = inferPropertyName(unwrapped.property as t.Expression | t.PrivateName, resolver, depth + 1);
 
@@ -1224,6 +1420,28 @@ export function segmentFromExpression(
       const resolved = resolveObjectPropertyExpression(objectExpression, propertyName, resolver, depth + 1);
       if (resolved) {
         return segmentFromExpression(resolved, resolver, depth + 1);
+      }
+    }
+
+    if (propertyName === 'queryKey' && t.isExpression(unwrapped.object)) {
+      const resolvedObject =
+        resolveQueryKeyExpression(unwrapped.object, resolver, depth + 1) ?? unwrapExpression(unwrapped.object);
+      if (t.isArrayExpression(resolvedObject)) {
+        return segmentFromExpression(resolvedObject, resolver, depth + 1);
+      }
+    }
+
+    if (propertyName === 'value' && t.isExpression(unwrapped.object)) {
+      const resolvedObject =
+        resolveQueryKeyExpression(unwrapped.object, resolver, depth + 1) ?? unwrapExpression(unwrapped.object);
+      if (t.isCallExpression(resolvedObject)) {
+        const calleeName = callCalleeName(resolvedObject.callee);
+        if (calleeName === 'ref' || calleeName === 'shallowRef') {
+          const firstArg = firstExpressionArgument(resolvedObject.arguments);
+          if (firstArg) {
+            return segmentFromExpression(firstArg, resolver, depth + 1);
+          }
+        }
       }
     }
 
@@ -1295,6 +1513,34 @@ export function segmentFromExpression(
   }
 
   if (t.isCallExpression(unwrapped)) {
+    const calleeName = callCalleeName(unwrapped.callee);
+    if (calleeName === 'createQueryKey' || calleeName === 'queryOptions' || calleeName === 'infiniteQueryOptions') {
+      const resolvedKeyExpression = resolveQueryKeyExpression(unwrapped, resolver, depth + 1);
+      if (resolvedKeyExpression && resolvedKeyExpression !== unwrapped) {
+        return segmentFromExpression(resolvedKeyExpression, resolver, depth + 1);
+      }
+    }
+
+    if (calleeName === 'useState' || calleeName === 'useReducer') {
+      const firstArg = firstExpressionArgument(unwrapped.arguments);
+      if (firstArg) {
+        return segmentFromExpression(firstArg, resolver, depth + 1);
+      }
+
+      return { text: UNRESOLVED_SEGMENT, isStatic: false };
+    }
+
+    if (calleeName === 'queryKey' || calleeName === 'queryKeys') {
+      return { text: `call(${calleeName})`, isStatic: false };
+    }
+
+    if (calleeName === 'ref' || calleeName === 'shallowRef') {
+      const firstArg = firstExpressionArgument(unwrapped.arguments);
+      if (firstArg) {
+        return segmentFromExpression(firstArg, resolver, depth + 1);
+      }
+    }
+
     const memoReturn = memoLikeCallReturnExpression(unwrapped);
     if (memoReturn) {
       return segmentFromExpression(memoReturn, resolver, depth + 1);
@@ -1361,8 +1607,17 @@ export function segmentFromExpression(
     };
   }
 
+  if (t.isBinaryExpression(unwrapped)) {
+    const left = normalizeSegmentResult(segmentFromExpression(unwrapped.left, resolver, depth + 1));
+    const right = normalizeSegmentResult(segmentFromExpression(unwrapped.right, resolver, depth + 1));
+    return {
+      text: `${left.text} ${unwrapped.operator} ${right.text}`,
+      isStatic: left.isStatic && right.isStatic,
+    };
+  }
+
   if (t.isObjectExpression(unwrapped)) {
-    const queryKeyNode = findObjectPropertyValue(unwrapped, 'queryKey');
+    const queryKeyNode = findObjectPropertyValue(unwrapped, 'queryKey', resolver);
     if (queryKeyNode) {
       return segmentFromExpression(queryKeyNode, resolver, depth + 1);
     }
@@ -1427,28 +1682,51 @@ export function readBooleanProperty(objectNode: t.ObjectExpression, propName: st
   return undefined;
 }
 
-export function findObjectPropertyValue(objectNode: t.ObjectExpression, propName: string): t.Expression | undefined {
-  const prop = objectNode.properties.find((value) => {
-    if (!t.isObjectProperty(value)) {
-      return false;
-    }
-
-    if (t.isIdentifier(value.key)) {
-      return value.key.name === propName;
-    }
-
-    if (t.isStringLiteral(value.key)) {
-      return value.key.value === propName;
-    }
-
-    return false;
-  });
-
-  if (!prop || !t.isObjectProperty(prop) || !t.isExpression(prop.value)) {
+export function findObjectPropertyValue(
+  objectNode: t.ObjectExpression,
+  propName: string,
+  resolver?: QueryKeyResolver,
+  depth = 0,
+): t.Expression | undefined {
+  if (depth >= MAX_RESOLVE_DEPTH) {
     return undefined;
   }
 
-  return unwrapExpression(prop.value);
+  for (let index = objectNode.properties.length - 1; index >= 0; index -= 1) {
+    const property = objectNode.properties[index];
+    if (!property) {
+      continue;
+    }
+
+    if (t.isObjectProperty(property)) {
+      if (t.isIdentifier(property.key) && property.key.name === propName && t.isExpression(property.value)) {
+        return unwrapExpression(property.value);
+      }
+
+      if (t.isStringLiteral(property.key) && property.key.value === propName && t.isExpression(property.value)) {
+        return unwrapExpression(property.value);
+      }
+
+      continue;
+    }
+
+    if (!resolver || !t.isSpreadElement(property) || !t.isExpression(property.argument)) {
+      continue;
+    }
+
+    const spreadValue =
+      resolveQueryKeyExpression(property.argument, resolver, depth + 1) ?? unwrapExpression(property.argument);
+    if (!t.isObjectExpression(spreadValue)) {
+      continue;
+    }
+
+    const nested = findObjectPropertyValue(spreadValue, propName, resolver, depth + 1);
+    if (nested) {
+      return nested;
+    }
+  }
+
+  return undefined;
 }
 
 export function normalizeQueryKey(
@@ -1468,6 +1746,33 @@ export function normalizeQueryKey(
 
   if (t.isArrayExpression(resolved)) {
     const segments = resolved.elements.flatMap((segment) => segmentsFromArrayElement(segment, resolver, 0));
+
+    const resolution = segments.every((seg) => seg.isStatic) ? 'static' : 'dynamic';
+    const rawSegments = segments.map((seg) => seg.text || UNRESOLVED_SEGMENT);
+
+    return {
+      id: rawSegments.join('|') || 'empty',
+      display: `[${rawSegments.join(', ')}]`,
+      segments: rawSegments,
+      matchMode: options.defaultMode ?? 'prefix',
+      resolution,
+      source: resolution === 'static' ? 'literal' : 'expression',
+    };
+  }
+
+  if (t.isCallExpression(resolved) && callCalleeName(resolved.callee) === 'createQueryKey') {
+    const segments = resolved.arguments.slice(0, 3).map((argument) => {
+      if (!argument || !t.isExpression(argument)) {
+        return { text: UNRESOLVED_SEGMENT, isStatic: false };
+      }
+
+      const resolvedArgument = resolveQueryKeyExpression(argument, resolver, 0) ?? unwrapExpression(argument);
+      return normalizeSegmentResult(segmentFromExpression(resolvedArgument, resolver, 0));
+    });
+
+    while (segments.length < 3) {
+      segments.push({ text: UNRESOLVED_SEGMENT, isStatic: false });
+    }
 
     const resolution = segments.every((seg) => seg.isStatic) ? 'static' : 'dynamic';
     const rawSegments = segments.map((seg) => seg.text || UNRESOLVED_SEGMENT);
@@ -1507,9 +1812,12 @@ export function inferHookQueryKey(
     return normalizeQueryKey(undefined, { defaultMode: 'unknown' }, resolver);
   }
 
-  const resolved = resolveQueryKeyExpression(first, resolver) ?? unwrapExpression(first);
+  const resolved =
+    unwrapFunctionReturnExpression(unwrapExpression(first)) ??
+    resolveQueryKeyExpression(first, resolver) ??
+    unwrapExpression(first);
   if (t.isObjectExpression(resolved)) {
-    const keyNode = findObjectPropertyValue(resolved, 'queryKey');
+    const keyNode = findObjectPropertyValue(resolved, 'queryKey', resolver);
     return normalizeQueryKey(keyNode, { defaultMode: 'exact' }, resolver);
   }
 
@@ -1525,7 +1833,10 @@ function collectQueryKeyExpressionsFromQueryOptionEntry(
     return [];
   }
 
-  const resolved = resolveQueryKeyExpression(expression, resolver, depth + 1) ?? unwrapExpression(expression);
+  const resolved =
+    unwrapFunctionReturnExpression(unwrapExpression(expression)) ??
+    resolveQueryKeyExpression(expression, resolver, depth + 1) ??
+    unwrapExpression(expression);
   if (t.isConditionalExpression(resolved)) {
     return [
       ...collectQueryKeyExpressionsFromQueryOptionEntry(resolved.consequent, resolver, depth + 1),
@@ -1545,12 +1856,12 @@ function collectQueryKeyExpressionsFromQueryOptionEntry(
   }
 
   if (t.isObjectExpression(resolved)) {
-    const queryKeyNode = findObjectPropertyValue(resolved, 'queryKey');
+    const queryKeyNode = findObjectPropertyValue(resolved, 'queryKey', resolver);
     if (queryKeyNode) {
       return [queryKeyNode];
     }
 
-    const nestedQueriesNode = findObjectPropertyValue(resolved, 'queries');
+    const nestedQueriesNode = findObjectPropertyValue(resolved, 'queries', resolver);
     if (nestedQueriesNode) {
       return collectQueryKeyExpressionsFromQueriesCollection(nestedQueriesNode, resolver, depth + 1);
     }
@@ -1579,7 +1890,10 @@ function collectQueryKeyExpressionsFromQueriesCollection(
     return [];
   }
 
-  const resolved = resolveQueryKeyExpression(expression, resolver, depth + 1) ?? unwrapExpression(expression);
+  const resolved =
+    unwrapFunctionReturnExpression(unwrapExpression(expression)) ??
+    resolveQueryKeyExpression(expression, resolver, depth + 1) ??
+    unwrapExpression(expression);
   if (t.isConditionalExpression(resolved)) {
     return [
       ...collectQueryKeyExpressionsFromQueriesCollection(resolved.consequent, resolver, depth + 1),
@@ -1725,6 +2039,37 @@ function isQueryCollectionHook(hookName: string): boolean {
   return normalized === 'usequeries' || normalized === 'usesuspensequeries';
 }
 
+export function isOpaqueCollectionQueryKey(queryKey: NormalizedQueryKey): boolean {
+  if (queryKey.source === 'wildcard') {
+    return false;
+  }
+
+  if (queryKey.segments.length === 0) {
+    return false;
+  }
+
+  return queryKey.segments.every((segment) => {
+    const normalized = segment.trim();
+    if (!normalized) {
+      return true;
+    }
+
+    if (normalized === 'UNRESOLVED') {
+      return true;
+    }
+
+    if (normalized.startsWith('$')) {
+      return true;
+    }
+
+    if (normalized.startsWith('call(') || normalized.startsWith('cond(')) {
+      return true;
+    }
+
+    return false;
+  });
+}
+
 export function inferHookQueryKeys(
   hookName: string,
   args: t.CallExpression['arguments'],
@@ -1747,7 +2092,7 @@ export function inferHookQueryKeys(
 
   let queryKeyExpressions: t.Expression[] = [];
   if (t.isObjectExpression(resolvedFirst)) {
-    const queriesNode = findObjectPropertyValue(resolvedFirst, 'queries');
+    const queriesNode = findObjectPropertyValue(resolvedFirst, 'queries', resolver);
     if (queriesNode) {
       queryKeyExpressions = collectQueryKeyExpressionsFromQueriesCollection(queriesNode, resolver, 0);
     }
@@ -1756,6 +2101,10 @@ export function inferHookQueryKeys(
   }
 
   if (queryKeyExpressions.length === 0) {
+    if (t.isObjectExpression(resolvedFirst) && findObjectPropertyValue(resolvedFirst, 'queries', resolver)) {
+      return [buildPassThroughActionKey('exact')];
+    }
+
     return [inferHookQueryKey(args, resolver)];
   }
 
@@ -1772,7 +2121,12 @@ export function inferHookQueryKeys(
     return [inferHookQueryKey(args, resolver)];
   }
 
-  return [...deduped.values()];
+  const dedupedValues = [...deduped.values()];
+  if (dedupedValues.every(isOpaqueCollectionQueryKey)) {
+    return [buildPassThroughActionKey('exact')];
+  }
+
+  return dedupedValues;
 }
 
 function isInlineQueryKeyObject(expression: t.Expression, depth: number): boolean {
@@ -1785,11 +2139,11 @@ function isInlineQueryKeyObject(expression: t.Expression, depth: number): boolea
     return false;
   }
 
-  if (findObjectPropertyValue(unwrapped, 'queryKey')) {
+  if (findObjectPropertyValue(unwrapped, 'queryKey', undefined)) {
     return true;
   }
 
-  const queriesNode = findObjectPropertyValue(unwrapped, 'queries');
+  const queriesNode = findObjectPropertyValue(unwrapped, 'queries', undefined);
   if (queriesNode && isInlineQueryKeyCollection(queriesNode, depth + 1)) {
     return true;
   }
@@ -1847,11 +2201,11 @@ export function isHookCallDirectQueryKeyDeclaration(args: t.CallExpression['argu
   const unwrapped = unwrapExpression(first);
 
   if (t.isObjectExpression(unwrapped)) {
-    if (findObjectPropertyValue(unwrapped, 'queryKey')) {
+    if (findObjectPropertyValue(unwrapped, 'queryKey', undefined)) {
       return true;
     }
 
-    const queriesNode = findObjectPropertyValue(unwrapped, 'queries');
+    const queriesNode = findObjectPropertyValue(unwrapped, 'queries', undefined);
     if (queriesNode && isInlineQueryKeyCollection(queriesNode, 0)) {
       return true;
     }
@@ -2110,7 +2464,7 @@ export function inferActionQueryKey(
 
   const resolvedActionOptions = resolveActionOptionsObject(first, resolver);
   if (resolvedActionOptions) {
-    const keyNode = findObjectPropertyValue(resolvedActionOptions, 'queryKey');
+    const keyNode = findObjectPropertyValue(resolvedActionOptions, 'queryKey', resolver);
     const exact = readBooleanProperty(resolvedActionOptions, 'exact');
     const mode: MatchMode = exact === true ? 'exact' : 'prefix';
 
@@ -2118,7 +2472,7 @@ export function inferActionQueryKey(
       return normalizeActionKeyOrWildcard(keyNode, { defaultMode: mode }, resolver);
     }
 
-    const predicateNode = findObjectPropertyValue(resolvedActionOptions, 'predicate');
+    const predicateNode = findObjectPropertyValue(resolvedActionOptions, 'predicate', resolver);
     if (predicateNode) {
       const inferredFromPredicate = inferActionQueryKeyFromPredicate(predicateNode, resolver);
       if (inferredFromPredicate) {
@@ -2140,7 +2494,7 @@ export function inferActionQueryKey(
     return normalizeActionKeyOrWildcard(resolved, { defaultMode: 'prefix' }, resolver);
   }
 
-  const keyNode = findObjectPropertyValue(resolved, 'queryKey');
+  const keyNode = findObjectPropertyValue(resolved, 'queryKey', resolver);
   const exact = readBooleanProperty(resolved, 'exact');
   const mode: MatchMode = exact === true ? 'exact' : 'prefix';
 
@@ -2148,7 +2502,7 @@ export function inferActionQueryKey(
     return normalizeActionKeyOrWildcard(keyNode, { defaultMode: mode }, resolver);
   }
 
-  const predicateNode = findObjectPropertyValue(resolved, 'predicate');
+  const predicateNode = findObjectPropertyValue(resolved, 'predicate', resolver);
   if (predicateNode) {
     const inferredFromPredicate = inferActionQueryKeyFromPredicate(predicateNode, resolver);
     if (inferredFromPredicate) {

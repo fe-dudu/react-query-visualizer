@@ -1,4 +1,4 @@
-import type { QueryRecord } from '../../shared/types';
+import type { QueryRecord } from '../../shared/contracts';
 
 export function isWildcardQueryKey(record: QueryRecord): boolean {
   if (record.queryKey.source === 'wildcard') {
@@ -94,6 +94,33 @@ function actionHasPrefixSegments(prefix: string[], declaredValue: string[]): boo
   return true;
 }
 
+function hasDynamicSegments(queryKey: QueryRecord['queryKey']): boolean {
+  return queryKey.segments.some((segment) => isDynamicSegment(segment) || isPlaceholderSegment(segment));
+}
+
+export function isOpaqueDynamicQueryKey(queryKey: QueryRecord['queryKey']): boolean {
+  if (queryKey.source === 'wildcard') {
+    return false;
+  }
+
+  if (!hasDynamicSegments(queryKey)) {
+    return false;
+  }
+
+  return !queryKey.segments.some((segment) => {
+    const normalized = segment.trim();
+    if (!normalized) {
+      return false;
+    }
+
+    if (isDynamicSegment(normalized) || isPlaceholderSegment(normalized) || isTemplateDynamicSegment(normalized)) {
+      return false;
+    }
+
+    return true;
+  });
+}
+
 export function actionAffectsDeclaredQueryKey(
   actionQueryKey: QueryRecord['queryKey'],
   declaredQueryKey: QueryRecord['queryKey'],
@@ -102,6 +129,10 @@ export function actionAffectsDeclaredQueryKey(
   // Keep it as its own dynamic key node instead of matching every declared key.
   if (actionQueryKey.id === 'pass-through-query-key') {
     return false;
+  }
+
+  if (actionQueryKey.source !== 'wildcard' && hasDynamicSegments(actionQueryKey)) {
+    return actionQueryKey.display === declaredQueryKey.display;
   }
 
   if (

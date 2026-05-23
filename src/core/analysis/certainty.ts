@@ -1,9 +1,8 @@
-import * as t from '@babel/types';
-
 import type { ParseContext } from './types';
+import * as t from './ast';
 import { QUERY_HOOKS } from './constants';
 import { getCertainty } from './context';
-import type { Resolution } from '../../shared/types';
+import type { Resolution } from '../../shared/contracts';
 
 export function hookCallInfo(
   callee: t.CallExpression['callee'],
@@ -105,11 +104,15 @@ function certaintyFromTypeName(typeName: t.TSEntityName, context: ParseContext, 
 }
 
 function queryClientTypeNodeCertainty(
-  typeNode: t.TSType,
+  typeNode: t.TSType | undefined,
   context: ParseContext,
   depth: number,
 ): Resolution | undefined {
   if (depth > 8) {
+    return undefined;
+  }
+
+  if (!typeNode) {
     return undefined;
   }
 
@@ -137,11 +140,11 @@ export function queryClientTypeAnnotationCertainty(
   annotation: t.TSTypeAnnotation | t.TypeAnnotation | t.Noop | null | undefined,
   context: ParseContext,
 ): Resolution | undefined {
-  if (!annotation || t.isNoop(annotation) || t.isTypeAnnotation(annotation)) {
+  if (!annotation || t.isNoop(annotation)) {
     return undefined;
   }
 
-  return queryClientTypeNodeCertainty(annotation.typeAnnotation, context, 0);
+  return queryClientTypeNodeCertainty((annotation as t.TypeAnnotation).typeAnnotation, context, 0);
 }
 
 export function extractLeafIdentifier(node: t.Expression | t.Super | t.V8IntrinsicIdentifier): string | undefined {

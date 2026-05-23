@@ -1,5 +1,5 @@
 import { buildGraph as buildGraphInternal } from './buildGraph';
-import type { AnalysisResult, GraphData, QueryRecord } from '../../shared/types';
+import type { AnalysisResult, GraphData, QueryRecord } from '../../shared/contracts';
 
 export interface GraphRoot {
   name: string;

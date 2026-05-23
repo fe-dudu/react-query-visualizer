@@ -1,6 +1,5 @@
-import * as t from '@babel/types';
-
 import type { ParseContext, QueryKeyResolver } from './types';
+import * as t from './ast';
 import { type Binding, type NodePath, traverseAst } from './astTraverse';
 import {
   extractLeafIdentifier,
@@ -13,16 +12,19 @@ import {
 import { ACTION_METHOD_TO_RELATION, QUERY_CLIENT_DECLARE_METHODS, QUERY_HOOKS } from './constants';
 import { getCertainty, isQueryLikeModule, mergeResolution, setCertainty } from './context';
 import {
+  buildPassThroughActionKey,
   findObjectPropertyValue,
   inferActionQueryKey,
   inferHookQueryKeys,
   isHookCallDirectQueryKeyDeclaration,
+  isOpaqueCollectionQueryKey,
   locationFromNode,
   normalizeQueryKey,
   readBooleanProperty,
+  resolveQueryKeyExpression,
 } from './queryKey';
 import { extractFunctionReturnExpression, unwrapExpression } from './symbols';
-import type { MatchMode, NormalizedQueryKey, QueryRecord, Resolution } from '../../shared/types';
+import type { MatchMode, NormalizedQueryKey, QueryRecord, Resolution } from '../../shared/contracts';
 
 function addRecord(records: QueryRecord[], input: QueryRecord): void {
   records.push(input);
@@ -35,6 +37,202 @@ const MAX_LOCAL_ACTION_ARG_RESOLVE_DEPTH = 12;
 interface QueryKeyExpressionCandidate {
   expression: t.Expression;
   locNode: t.Node;
+}
+
+function functionBindingName(
+  functionPath: NodePath<t.FunctionDeclaration | t.FunctionExpression | t.ArrowFunctionExpression>,
+): string | undefined {
+  const node = functionPath.node;
+
+  if (t.isFunctionDeclaration(node) && node.id) {
+    return node.id.name;
+  }
+
+  if (t.isFunctionExpression(node) && node.id) {
+    return node.id.name;
+  }
+
+  const parentPath = functionPath.parentPath;
+  if (parentPath?.isVariableDeclarator() && t.isIdentifier(parentPath.node.id)) {
+    return parentPath.node.id.name;
+  }
+
+  if (parentPath?.isAssignmentExpression() && t.isIdentifier(parentPath.node.left)) {
+    return parentPath.node.left.name;
+  }
+
+  return undefined;
+}
+
+function findBindingInAncestorScopes(path: NodePath, name: string): Binding | undefined {
+  let current: NodePath | null = path;
+  while (current) {
+    const binding = current.scope.getBinding(name);
+    if (binding) {
+      return binding;
+    }
+    current = current.parentPath;
+  }
+
+  return undefined;
+}
+
+function resolveParamFromFunctionCallsite(
+  callPath: NodePath<t.CallExpression | t.OptionalCallExpression>,
+  binding: Binding,
+  resolver: QueryKeyResolver | undefined,
+  depth: number,
+  seen: Set<string>,
+): t.Expression | undefined {
+  const functionParent = binding.path.getFunctionParent();
+  if (!functionParent) {
+    return undefined;
+  }
+
+  const functionName = functionBindingName(
+    functionParent as NodePath<t.FunctionDeclaration | t.FunctionExpression | t.ArrowFunctionExpression>,
+  );
+  if (!functionName) {
+    return undefined;
+  }
+
+  let rootPath = functionParent;
+  while (rootPath.parentPath) {
+    rootPath = rootPath.parentPath;
+  }
+
+  const propName = binding.identifier.name;
+  let resolvedValue: t.Expression | undefined;
+  traverseAst(rootPath.node, {
+    JSXOpeningElement(openingPath: NodePath<t.JSXOpeningElement>) {
+      if (resolvedValue) {
+        return;
+      }
+
+      const nameNode = openingPath.node.name;
+      if (!t.isJSXIdentifier(nameNode) || nameNode.name !== functionName) {
+        return;
+      }
+
+      const attribute = openingPath.node.attributes.find((attributeNode): attributeNode is t.JSXAttribute => {
+        return (
+          t.isJSXAttribute(attributeNode) &&
+          t.isJSXIdentifier(attributeNode.name) &&
+          attributeNode.name.name === propName
+        );
+      });
+
+      if (!attribute) {
+        return;
+      }
+
+      const value = attribute.value;
+      if (!value || !t.isJSXExpressionContainer(value) || t.isJSXEmptyExpression(value.expression)) {
+        return;
+      }
+
+      const callsiteFunction = openingPath.getFunctionParent();
+      const callsitePath = (callsiteFunction ?? (callPath as unknown as NodePath<t.BaseNode>)) as unknown as NodePath<
+        t.CallExpression | t.OptionalCallExpression
+      >;
+      const candidate = resolveLocalActionArgExpression(callsitePath, value.expression, resolver, depth + 1, seen);
+      if (candidate) {
+        resolvedValue = candidate;
+      }
+    },
+  });
+
+  return resolvedValue;
+}
+
+function getQueriesDataQueryKeyExpression(
+  callExpression: t.CallExpression,
+  resolver: QueryKeyResolver | undefined,
+  depth: number,
+): t.Expression | undefined {
+  const callee = unwrapExpression(callExpression.callee);
+  if (!t.isMemberExpression(callee) || callee.computed || !t.isIdentifier(callee.property)) {
+    return undefined;
+  }
+
+  if (callee.property.name !== 'getQueriesData') {
+    return undefined;
+  }
+
+  const firstArg = callExpression.arguments[0];
+  if (!firstArg || t.isSpreadElement(firstArg) || !t.isExpression(firstArg)) {
+    return undefined;
+  }
+
+  const resolvedFirstArg = resolveQueryKeyExpression(firstArg, resolver, depth + 1) ?? unwrapExpression(firstArg);
+  if (t.isObjectExpression(resolvedFirstArg)) {
+    const queryKeyValue = findObjectPropertyValue(resolvedFirstArg, 'queryKey', resolver);
+    if (queryKeyValue) {
+      return resolveQueryKeyExpression(queryKeyValue, resolver, depth + 1) ?? queryKeyValue;
+    }
+  }
+
+  if (t.isArrayExpression(resolvedFirstArg)) {
+    return resolvedFirstArg;
+  }
+
+  return undefined;
+}
+
+function findNamedGetQueriesDataQueryKey(
+  callPath: NodePath<t.CallExpression | t.OptionalCallExpression>,
+  bindingName: string,
+  resolver: QueryKeyResolver | undefined,
+): t.Expression | undefined {
+  let rootPath: NodePath = callPath;
+  while (rootPath.parentPath) {
+    rootPath = rootPath.parentPath;
+  }
+
+  let resolved: t.Expression | undefined;
+  traverseAst(rootPath.node, {
+    VariableDeclarator(variablePath: NodePath<t.VariableDeclarator>) {
+      if (resolved) {
+        return;
+      }
+
+      if (!t.isIdentifier(variablePath.node.id) || variablePath.node.id.name !== bindingName) {
+        return;
+      }
+
+      if (!variablePath.node.init || !t.isExpression(variablePath.node.init)) {
+        return;
+      }
+
+      const initExpression = unwrapExpression(variablePath.node.init);
+      if (t.isCallExpression(initExpression)) {
+        const queryKey = getQueriesDataQueryKeyExpression(initExpression, resolver, 0);
+        if (queryKey) {
+          resolved = queryKey;
+        }
+      }
+    },
+  });
+
+  return resolved;
+}
+
+function resolveNamedGetQueriesDataQueryKeyFromBinding(
+  callPath: NodePath<t.CallExpression | t.OptionalCallExpression>,
+  bindingName: string,
+  resolver: QueryKeyResolver | undefined,
+): t.Expression | undefined {
+  const binding = findBindingInAncestorScopes(callPath, bindingName);
+  if (!binding || !binding.path.isVariableDeclarator()) {
+    return undefined;
+  }
+
+  const init = binding.path.node.init;
+  if (!init || !t.isExpression(init) || !t.isCallExpression(init)) {
+    return undefined;
+  }
+
+  return getQueriesDataQueryKeyExpression(init, resolver, 0);
 }
 
 function resolveJsxPropExpression(
@@ -278,7 +476,11 @@ function shouldSkipPassThroughUnresolvedAction(
   return false;
 }
 
-function propertyNameFromObjectPropertyKey(key: t.ObjectProperty['key']): string | undefined {
+function propertyNameFromObjectPropertyKey(key: t.Node | t.PrivateName | undefined): string | undefined {
+  if (!key) {
+    return undefined;
+  }
+
   if (t.isIdentifier(key)) {
     return key.name;
   }
@@ -294,7 +496,11 @@ function propertyNameFromObjectPropertyKey(key: t.ObjectProperty['key']): string
   return undefined;
 }
 
-function propertyNameFromTypeLiteralKey(key: t.TSPropertySignature['key']): string | undefined {
+function propertyNameFromTypeLiteralKey(key: t.Node | t.PrivateName | undefined): string | undefined {
+  if (!key) {
+    return undefined;
+  }
+
   if (t.isIdentifier(key)) {
     return key.name;
   }
@@ -308,6 +514,30 @@ function propertyNameFromTypeLiteralKey(key: t.TSPropertySignature['key']): stri
   }
 
   return undefined;
+}
+
+function locationFromCallNode(node: t.CallExpression | t.OptionalCallExpression): { line: number; column: number } {
+  const callLocation = locationFromNode(node);
+  const callee = node.callee;
+
+  if (t.isMemberExpression(callee) || t.isOptionalMemberExpression(callee)) {
+    const property = callee.property;
+    if ((t.isIdentifier(property) || t.isStringLiteral(property) || t.isNumericLiteral(property)) && property.loc) {
+      const propertyLocation = locationFromNode(property);
+      if (propertyLocation.line === callLocation.line) {
+        return propertyLocation;
+      }
+    }
+  }
+
+  if ('loc' in callee && callee.loc) {
+    const calleeLocation = locationFromNode(callee as t.Node);
+    if (calleeLocation.line === callLocation.line) {
+      return calleeLocation;
+    }
+  }
+
+  return callLocation;
 }
 
 function returnTypeFactoryNameFromEntity(entity: t.TSEntityName): string | undefined {
@@ -331,7 +561,7 @@ function returnTypeFactoryNameFromType(typeNode: t.TSType | undefined): string |
     return undefined;
   }
 
-  const [firstParam] = typeNode.typeParameters?.params ?? [];
+  const [firstParam] = typeNode.typeParameters?.params ?? typeNode.typeArguments?.params ?? [];
   if (!firstParam || !t.isTSTypeQuery(firstParam)) {
     return undefined;
   }
@@ -345,38 +575,60 @@ function returnTypeFactoryNameFromType(typeNode: t.TSType | undefined): string |
 
 function typeAnnotationNodeFromIdentifier(identifier: t.Identifier): t.TSType | undefined {
   const annotation = identifier.typeAnnotation;
-  if (!annotation || t.isNoop(annotation) || t.isTypeAnnotation(annotation)) {
+  if (!annotation || t.isNoop(annotation)) {
     return undefined;
   }
 
-  return annotation.typeAnnotation;
+  return (annotation as t.TypeAnnotation).typeAnnotation;
+}
+
+function typeNodePropertyTypeNode(typeNode: t.TSType | undefined, propertyName: string): t.TSType | undefined {
+  if (!typeNode) {
+    return undefined;
+  }
+
+  if (t.isTSParenthesizedType(typeNode)) {
+    return typeNodePropertyTypeNode(typeNode.typeAnnotation, propertyName);
+  }
+
+  if (t.isTSTypeLiteral(typeNode)) {
+    for (const member of typeNode.members) {
+      if (!t.isTSPropertySignature(member) || !member.typeAnnotation) {
+        continue;
+      }
+
+      const keyName = propertyNameFromTypeLiteralKey(member.key);
+      if (keyName !== propertyName) {
+        continue;
+      }
+
+      return member.typeAnnotation.typeAnnotation;
+    }
+
+    return undefined;
+  }
+
+  if (t.isTSIntersectionType(typeNode) || t.isTSUnionType(typeNode)) {
+    for (const memberType of typeNode.types) {
+      const resolved = typeNodePropertyTypeNode(memberType, propertyName);
+      if (resolved) {
+        return resolved;
+      }
+    }
+    return undefined;
+  }
+
+  return undefined;
 }
 
 function objectPatternPropertyTypeNode(objectPattern: t.ObjectPattern, propertyName: string): t.TSType | undefined {
   const annotation = objectPattern.typeAnnotation;
-  if (!annotation || t.isNoop(annotation) || t.isTypeAnnotation(annotation)) {
+  if (!annotation || t.isNoop(annotation)) {
     return undefined;
   }
 
-  const typeNode = annotation.typeAnnotation;
-  if (!t.isTSTypeLiteral(typeNode)) {
-    return undefined;
-  }
-
-  for (const member of typeNode.members) {
-    if (!t.isTSPropertySignature(member) || !member.typeAnnotation) {
-      continue;
-    }
-
-    const keyName = propertyNameFromTypeLiteralKey(member.key);
-    if (keyName !== propertyName) {
-      continue;
-    }
-
-    return member.typeAnnotation.typeAnnotation;
-  }
-
-  return undefined;
+  const typeNode = (annotation as t.TypeAnnotation).typeAnnotation;
+  return typeNodePropertyTypeNode(typeNode, propertyName);
 }
 
 function objectPatternPropertyNameForBinding(objectPattern: t.ObjectPattern, bindingName: string): string | undefined {
@@ -758,6 +1010,100 @@ function resolveLocalActionArgExpression(
   }
 
   const unwrapped = unwrapExpression(expression);
+  if (t.isFunctionExpression(unwrapped) || t.isArrowFunctionExpression(unwrapped)) {
+    const returned = extractFunctionReturnExpression(unwrapped);
+    if (!returned) {
+      return unwrapped;
+    }
+
+    const resolvedReturned = resolveLocalActionArgExpression(callPath, returned, resolver, depth + 1, seen);
+    return resolvedReturned ?? returned;
+  }
+
+  if (t.isArrayExpression(unwrapped)) {
+    let changed = false;
+    const elements = unwrapped.elements.map((element) => {
+      if (!element) {
+        return null;
+      }
+
+      if (t.isSpreadElement(element) && t.isExpression(element.argument)) {
+        const resolvedSpread =
+          resolveLocalActionArgExpression(callPath, element.argument, resolver, depth + 1, seen) ??
+          unwrapExpression(element.argument);
+        if (resolvedSpread !== element.argument) {
+          changed = true;
+        }
+        return t.spreadElement(resolvedSpread);
+      }
+
+      if (!t.isExpression(element)) {
+        return t.cloneNode(element, true);
+      }
+
+      const resolvedElement = resolveLocalActionArgExpression(callPath, element, resolver, depth + 1, seen);
+      if (resolvedElement && resolvedElement !== element) {
+        changed = true;
+        return t.cloneNode(resolvedElement, true);
+      }
+
+      return t.cloneNode(element, true);
+    });
+
+    if (!changed) {
+      return unwrapped;
+    }
+
+    const cloned = t.cloneNode(unwrapped, false);
+    cloned.elements = elements;
+    return cloned;
+  }
+
+  if (t.isObjectExpression(unwrapped)) {
+    let changed = false;
+    const properties = unwrapped.properties.flatMap((property) => {
+      if (t.isSpreadElement(property) && t.isExpression(property.argument)) {
+        const resolvedSpread =
+          resolveLocalActionArgExpression(callPath, property.argument, resolver, depth + 1, seen) ??
+          unwrapExpression(property.argument);
+        if (t.isObjectExpression(resolvedSpread)) {
+          changed = true;
+          const nested = resolveLocalActionArgExpression(callPath, resolvedSpread, resolver, depth + 1, seen);
+          if (nested && t.isObjectExpression(nested)) {
+            return nested.properties;
+          }
+          return resolvedSpread.properties;
+        }
+      }
+
+      if (t.isObjectProperty(property) && t.isExpression(property.value)) {
+        const resolvedValue = resolveLocalActionArgExpression(callPath, property.value, resolver, depth + 1, seen);
+        if (resolvedValue && resolvedValue !== property.value) {
+          changed = true;
+          return [
+            t.objectProperty(
+              t.cloneNode(property.key, true),
+              resolvedValue,
+              property.computed,
+              property.shorthand &&
+                t.isIdentifier(property.key) &&
+                t.isIdentifier(resolvedValue) &&
+                property.key.name === resolvedValue.name,
+            ),
+          ];
+        }
+      }
+
+      return [property];
+    });
+
+    if (changed) {
+      return t.objectExpression(properties);
+    }
+
+    return unwrapped;
+  }
+
   if (t.isMemberExpression(unwrapped) && t.isExpression(unwrapped.object)) {
     const propertyName = memberPropertyName(unwrapped);
     const resolvedObject = resolveLocalActionArgExpression(callPath, unwrapped.object, resolver, depth + 1, seen);
@@ -787,6 +1133,26 @@ function resolveLocalActionArgExpression(
   }
 
   if (t.isCallExpression(unwrapped) && t.isExpression(unwrapped.callee)) {
+    let calleeName: string | undefined;
+    if (t.isIdentifier(unwrapped.callee)) {
+      calleeName = unwrapped.callee.name;
+    } else if (
+      t.isMemberExpression(unwrapped.callee) &&
+      !unwrapped.callee.computed &&
+      t.isIdentifier(unwrapped.callee.property)
+    ) {
+      calleeName = unwrapped.callee.property.name;
+    }
+
+    if (calleeName === 'useState' || calleeName === 'useReducer') {
+      const firstArg = unwrapped.arguments[0];
+      if (!firstArg || t.isSpreadElement(firstArg) || !t.isExpression(firstArg)) {
+        return undefined;
+      }
+      const resolvedFirstArg = resolveLocalActionArgExpression(callPath, firstArg, resolver, depth + 1, seen);
+      return resolvedFirstArg ?? firstArg;
+    }
+
     const isQueryOptionsIdentityCall = (): boolean => {
       if (t.isIdentifier(unwrapped.callee)) {
         return unwrapped.callee.name === 'queryOptions' || unwrapped.callee.name === 'infiniteQueryOptions';
@@ -809,6 +1175,11 @@ function resolveLocalActionArgExpression(
       const resolvedIdentityArg = unwrapExpression(firstArg);
       const chained = resolveLocalActionArgExpression(callPath, resolvedIdentityArg, resolver, depth + 1, seen);
       return chained ?? resolvedIdentityArg;
+    }
+
+    const queryResolved = resolveQueryKeyExpression(unwrapped, resolver, depth + 1);
+    if (queryResolved && (t.isArrayExpression(queryResolved) || t.isObjectExpression(queryResolved))) {
+      return queryResolved;
     }
 
     const inlineWithParams = (
@@ -849,7 +1220,7 @@ function resolveLocalActionArgExpression(
       }
     }
 
-    if (t.isIdentifier(unwrapped.callee) && !isLikelyQueryKeyFactoryName(unwrapped.callee.name)) {
+    if (t.isIdentifier(unwrapped.callee)) {
       const binding = callPath.scope.getBinding(unwrapped.callee.name);
       if (binding?.path.isFunctionDeclaration()) {
         const returned = extractFunctionReturnExpression(binding.path.node);
@@ -874,10 +1245,6 @@ function resolveLocalActionArgExpression(
 
     let canInlineResolvedCalleeReference = true;
     if (t.isIdentifier(unwrapped.callee)) {
-      if (isLikelyQueryKeyFactoryName(unwrapped.callee.name)) {
-        canInlineResolvedCalleeReference = false;
-      }
-
       const calleeBinding = callPath.scope.getBinding(unwrapped.callee.name);
       if (calleeBinding?.kind === 'module') {
         canInlineResolvedCalleeReference = false;
@@ -918,33 +1285,101 @@ function resolveLocalActionArgExpression(
   seen.add(seenKey);
 
   const binding = callPath.scope.getBinding(unwrapped.name);
-  if (!binding) {
+  const resolvedBinding = binding ?? findBindingInAncestorScopes(callPath, unwrapped.name);
+  if (!resolvedBinding) {
     return undefined;
   }
 
-  if (binding.kind === 'param') {
-    const hintedFromType = resolveQueryKeyFactoryReturnFromParam(binding, resolver);
-    if (!hintedFromType) {
-      return undefined;
+  if (resolvedBinding.kind === 'param') {
+    const hintedFromType = resolveQueryKeyFactoryReturnFromParam(resolvedBinding, resolver);
+    if (hintedFromType) {
+      const chained = resolveLocalActionArgExpression(callPath, hintedFromType, resolver, depth + 1, seen);
+      return chained ?? hintedFromType;
     }
 
-    const chained = resolveLocalActionArgExpression(callPath, hintedFromType, resolver, depth + 1, seen);
-    return chained ?? hintedFromType;
+    const hintedFromCallsite = resolveParamFromFunctionCallsite(callPath, resolvedBinding, resolver, depth, seen);
+    if (hintedFromCallsite) {
+      const chained = resolveLocalActionArgExpression(callPath, hintedFromCallsite, resolver, depth + 1, seen);
+      return chained ?? hintedFromCallsite;
+    }
+
+    return undefined;
   }
 
-  if (binding.kind === 'module' || !binding.constant) {
-    if (binding.kind === 'module') {
+  if (resolvedBinding.path.parentPath?.node.type === 'ArrayPattern') {
+    const arrayPattern = resolvedBinding.path.parentPath.node as t.ArrayPattern;
+    const patternParent = resolvedBinding.path.parentPath.parentPath;
+    let sourceExpression: t.Expression | undefined;
+
+    if (patternParent?.isVariableDeclarator() && patternParent.node.init && t.isExpression(patternParent.node.init)) {
+      sourceExpression = unwrapExpression(patternParent.node.init);
+    } else if (patternParent?.isVariableDeclarator()) {
+      const declarationParent = patternParent.parentPath;
+      const loopParent = declarationParent?.parentPath;
+      if (
+        declarationParent?.isVariableDeclaration() &&
+        loopParent &&
+        t.isForOfStatement(loopParent.node) &&
+        t.isExpression(loopParent.node.right)
+      ) {
+        sourceExpression = unwrapExpression(loopParent.node.right);
+      }
+    } else if (patternParent && t.isForOfStatement(patternParent.node) && t.isExpression(patternParent.node.right)) {
+      sourceExpression = unwrapExpression(patternParent.node.right);
+    }
+
+    if (sourceExpression) {
+      const elementIndex = arrayPattern.elements.findIndex((element) => {
+        if (element === resolvedBinding.path.node) {
+          return true;
+        }
+
+        return t.isIdentifier(element) && element.name === resolvedBinding.identifier.name;
+      });
+
+      if (elementIndex >= 0) {
+        if (elementIndex === 0) {
+          const localCollectionKey = t.isCallExpression(sourceExpression)
+            ? getQueriesDataQueryKeyExpression(sourceExpression, resolver, depth + 1)
+            : undefined;
+          if (localCollectionKey) {
+            return localCollectionKey;
+          }
+
+          if (t.isIdentifier(sourceExpression) || t.isMemberExpression(sourceExpression)) {
+            const collectionName = t.isIdentifier(sourceExpression)
+              ? sourceExpression.name
+              : memberPropertyName(sourceExpression);
+            if (collectionName) {
+              const namedCollectionKey =
+                resolveNamedGetQueriesDataQueryKeyFromBinding(callPath, collectionName, resolver) ??
+                findNamedGetQueriesDataQueryKey(callPath, collectionName, resolver);
+              if (namedCollectionKey) {
+                return namedCollectionKey;
+              }
+            }
+          }
+        }
+
+        const resolvedInit = resolveLocalActionArgExpression(callPath, sourceExpression, resolver, depth + 1, seen);
+        return resolvedInit ?? sourceExpression;
+      }
+    }
+  }
+
+  if (resolvedBinding.kind === 'module' || !resolvedBinding.constant) {
+    if (resolvedBinding.kind === 'module') {
       return undefined;
     }
 
     const assignedExpressions: t.Expression[] = [];
-    for (const violation of binding.constantViolations) {
+    for (const violation of resolvedBinding.constantViolations) {
       if (!violation.isAssignmentExpression()) {
         return undefined;
       }
 
       const left = violation.node.left;
-      if (!t.isIdentifier(left) || left.name !== binding.identifier.name) {
+      if (!t.isIdentifier(left) || left.name !== resolvedBinding.identifier.name) {
         return undefined;
       }
 
@@ -955,25 +1390,49 @@ function resolveLocalActionArgExpression(
       assignedExpressions.push(unwrapExpression(violation.node.right));
     }
 
-    if (assignedExpressions.length === 1) {
-      const [assignedExpression] = assignedExpressions;
-      if (assignedExpression) {
-        const mutableResolved = resolveLocalActionArgExpression(
+    const functionParent = resolvedBinding.path.getFunctionParent();
+    if (functionParent) {
+      let scopedAssignedExpression: t.Expression | undefined;
+      const visit = (current: t.Node): void => {
+        if (
+          t.isAssignmentExpression(current) &&
+          t.isIdentifier(current.left) &&
+          current.left.name === resolvedBinding.identifier.name &&
+          t.isExpression(current.right)
+        ) {
+          scopedAssignedExpression = unwrapExpression(current.right);
+        }
+
+        t.forEachNodeChild(current, (child) => {
+          visit(child);
+        });
+      };
+
+      visit(functionParent.node);
+      if (scopedAssignedExpression) {
+        const scopedResolved = resolveLocalActionArgExpression(
           callPath,
-          assignedExpression,
+          scopedAssignedExpression,
           resolver,
           depth + 1,
           seen,
         );
-        return mutableResolved ?? assignedExpression;
+        return scopedResolved ?? scopedAssignedExpression;
       }
+    }
+
+    const assignedExpression = assignedExpressions[assignedExpressions.length - 1];
+
+    if (assignedExpression) {
+      const mutableResolved = resolveLocalActionArgExpression(callPath, assignedExpression, resolver, depth + 1, seen);
+      return mutableResolved ?? assignedExpression;
     }
 
     return undefined;
   }
 
-  if (binding.path.isVariableDeclarator()) {
-    const init = binding.path.node.init;
+  if (resolvedBinding.path.isVariableDeclarator()) {
+    const init = resolvedBinding.path.node.init;
     if (!init || !t.isExpression(init)) {
       return undefined;
     }
@@ -983,8 +1442,8 @@ function resolveLocalActionArgExpression(
     return chained ?? resolvedInit;
   }
 
-  if (binding.path.isFunctionDeclaration()) {
-    const returned = extractFunctionReturnExpression(binding.path.node);
+  if (resolvedBinding.path.isFunctionDeclaration()) {
+    const returned = extractFunctionReturnExpression(resolvedBinding.path.node);
     if (!returned) {
       return undefined;
     }
@@ -993,8 +1452,8 @@ function resolveLocalActionArgExpression(
     return chained ?? returned;
   }
 
-  if (binding.path.isAssignmentPattern() && t.isExpression(binding.path.node.right)) {
-    const right = unwrapExpression(binding.path.node.right);
+  if (resolvedBinding.path.isAssignmentPattern() && t.isExpression(resolvedBinding.path.node.right)) {
+    const right = unwrapExpression(resolvedBinding.path.node.right);
     const chained = resolveLocalActionArgExpression(callPath, right, resolver, depth + 1, seen);
     return chained ?? right;
   }
@@ -1012,32 +1471,43 @@ function resolveActionArgsWithLocalBindings(
     return args;
   }
 
-  const resolvedFirst = resolveLocalActionArgExpression(callPath, first, resolver);
-  const candidateFirst = resolvedFirst ?? unwrapExpression(first);
+  const candidateFirst = unwrapExpression(first);
   if (t.isObjectExpression(candidateFirst)) {
     const nextProperties = candidateFirst.properties.map((property) => {
-      if (!t.isObjectProperty(property) || !t.isExpression(property.value)) {
+      if (!t.isObjectProperty(property)) {
+        return property;
+      }
+
+      if (!t.isExpression(property.value)) {
         return property;
       }
 
       const keyName = propertyNameFromObjectPropertyKey(property.key);
-      if (keyName !== 'queryKey') {
-        return property;
-      }
+      const resolvedValue =
+        keyName === 'queryKey'
+          ? (() => {
+              const queryResolved = resolveQueryKeyExpression(property.value, resolver);
+              if (queryResolved) {
+                const chainedResolved = resolveLocalActionArgExpression(callPath, queryResolved, resolver);
+                return chainedResolved ?? queryResolved;
+              }
 
-      const resolvedQueryKeyValue = resolveLocalActionArgExpression(callPath, property.value, resolver);
-      if (!resolvedQueryKeyValue) {
+              return resolveLocalActionArgExpression(callPath, property.value, resolver);
+            })()
+          : resolveLocalActionArgExpression(callPath, property.value, resolver);
+
+      if (!resolvedValue) {
         return property;
       }
 
       return t.objectProperty(
         t.cloneNode(property.key, true),
-        resolvedQueryKeyValue,
+        resolvedValue,
         property.computed,
         property.shorthand &&
           t.isIdentifier(property.key) &&
-          t.isIdentifier(resolvedQueryKeyValue) &&
-          property.key.name === resolvedQueryKeyValue.name,
+          t.isIdentifier(resolvedValue) &&
+          property.key.name === resolvedValue.name,
       );
     });
 
@@ -1045,6 +1515,7 @@ function resolveActionArgsWithLocalBindings(
     return [rewrittenFirst, ...args.slice(1)] as t.CallExpression['arguments'];
   }
 
+  const resolvedFirst = resolveLocalActionArgExpression(callPath, first, resolver);
   if (!resolvedFirst) {
     return args;
   }
@@ -1059,15 +1530,6 @@ function isIgnorablePropQueryKey(key: QueryRecord['queryKey']): boolean {
 
   const segment = key.segments[0];
   return segment === 'undefined' || segment === '$undefined' || segment === 'null' || segment === '$null';
-}
-
-function isLikelyQueryKeyFactoryName(name: string | undefined): boolean {
-  if (!name) {
-    return false;
-  }
-
-  const normalized = name.toLowerCase();
-  return normalized.includes('querykey') || normalized.includes('rqkey');
 }
 
 export function scanImports(ast: t.File, context: ParseContext): void {
@@ -1164,11 +1626,11 @@ export function scanLocalBindings(
 
   function trackObjectPatternIfTypedQueryClient(pattern: t.ObjectPattern): void {
     const annotation = pattern.typeAnnotation;
-    if (!annotation || t.isNoop(annotation) || t.isTypeAnnotation(annotation)) {
+    if (!annotation || t.isNoop(annotation)) {
       return;
     }
 
-    const typeNode = annotation.typeAnnotation;
+    const typeNode = (annotation as t.TypeAnnotation).typeAnnotation;
     if (!t.isTSTypeLiteral(typeNode)) {
       return;
     }
@@ -1223,7 +1685,9 @@ export function scanLocalBindings(
     }
   }
 
-  function localBindingNameFromObjectPatternProperty(property: t.ObjectProperty): string | undefined {
+  function localBindingNameFromObjectPatternProperty(
+    property: t.ObjectProperty | t.AssignmentTargetProperty | t.BindingProperty,
+  ): string | undefined {
     if (t.isIdentifier(property.value)) {
       return property.value.name;
     }
@@ -1731,12 +2195,7 @@ export function scanCalls(
         }
       }
 
-      const visitorKeys = t.VISITOR_KEYS[currentNode.type];
-      if (!visitorKeys) {
-        continue;
-      }
-
-      for (const key of visitorKeys) {
+      t.forEachNodeChild(currentNode, (child, key) => {
         let childAsReference = asReference;
         if (t.isObjectProperty(currentNode) && key === 'key' && !currentNode.computed) {
           childAsReference = false;
@@ -1756,20 +2215,8 @@ export function scanCalls(
           childAsReference = false;
         }
 
-        const value = (currentNode as unknown as Record<string, unknown>)[key];
-        if (Array.isArray(value)) {
-          for (const nested of value) {
-            if (nested && typeof nested === 'object' && 'type' in nested) {
-              stack.push({ node: nested as t.Node, asReference: childAsReference });
-            }
-          }
-          continue;
-        }
-
-        if (value && typeof value === 'object' && 'type' in value) {
-          stack.push({ node: value as t.Node, asReference: childAsReference });
-        }
-      }
+        stack.push({ node: child, asReference: childAsReference });
+      });
     }
 
     return [...names];
@@ -2088,7 +2535,7 @@ export function scanCalls(
         return undefined;
       }
 
-      queryKeyExpression = findObjectPropertyValue(resolvedFirst, 'queryKey');
+      queryKeyExpression = findObjectPropertyValue(resolvedFirst, 'queryKey', resolver);
       if (!queryKeyExpression) {
         return undefined;
       }
@@ -2135,7 +2582,12 @@ export function scanCalls(
       return undefined;
     }
 
-    return [...deduped.values()];
+    const dedupedValues = [...deduped.values()];
+    if (dedupedValues.every(isOpaqueCollectionQueryKey)) {
+      return [buildPassThroughActionKey('exact')];
+    }
+
+    return dedupedValues;
   }
 
   function isQueryCollectionHookName(hookName: string): boolean {
@@ -2171,10 +2623,19 @@ export function scanCalls(
 
     const resolvedByReference = resolver?.resolveReference(expression);
     if (resolvedByReference) {
-      return unwrapExpression(resolvedByReference);
+      const unwrappedResolved = unwrapExpression(resolvedByReference);
+      if (t.isFunctionExpression(unwrappedResolved) || t.isArrowFunctionExpression(unwrappedResolved)) {
+        return extractFunctionReturnExpression(unwrappedResolved) ?? unwrappedResolved;
+      }
+      return unwrappedResolved;
     }
 
-    return unwrapExpression(expression);
+    const unwrappedExpression = unwrapExpression(expression);
+    if (t.isFunctionExpression(unwrappedExpression) || t.isArrowFunctionExpression(unwrappedExpression)) {
+      return extractFunctionReturnExpression(unwrappedExpression) ?? unwrappedExpression;
+    }
+
+    return unwrappedExpression;
   }
 
   function collectHookQueryKeyTemplatesFromOptionEntry(
@@ -2206,12 +2667,12 @@ export function scanCalls(
     }
 
     if (t.isObjectExpression(resolved)) {
-      const queryKeyNode = findObjectPropertyValue(resolved, 'queryKey');
+      const queryKeyNode = findObjectPropertyValue(resolved, 'queryKey', resolver);
       if (queryKeyNode) {
         return [queryKeyNode];
       }
 
-      const queriesNode = findObjectPropertyValue(resolved, 'queries');
+      const queriesNode = findObjectPropertyValue(resolved, 'queries', resolver);
       if (queriesNode) {
         return collectHookQueryKeyTemplatesFromQueriesCollection(callPath, queriesNode, depth + 1);
       }
@@ -2398,7 +2859,7 @@ export function scanCalls(
     }
 
     if (t.isObjectExpression(resolved)) {
-      const queriesNode = findObjectPropertyValue(resolved, 'queries');
+      const queriesNode = findObjectPropertyValue(resolved, 'queries', resolver);
       if (queriesNode) {
         return collectHookIteratorExpansionCandidates(callPath, queriesNode, depth + 1);
       }
@@ -2527,7 +2988,12 @@ export function scanCalls(
       return undefined;
     }
 
-    return [...deduped.values()];
+    const dedupedValues = [...deduped.values()];
+    if (dedupedValues.every(isOpaqueCollectionQueryKey)) {
+      return [buildPassThroughActionKey('exact')];
+    }
+
+    return dedupedValues;
   }
 
   function expandedHookQueryKeysFromStaticCollection(
@@ -2566,7 +3032,12 @@ export function scanCalls(
       return undefined;
     }
 
-    return [...deduped.values()];
+    const dedupedValues = [...deduped.values()];
+    if (dedupedValues.every(isOpaqueCollectionQueryKey)) {
+      return [buildPassThroughActionKey('exact')];
+    }
+
+    return dedupedValues;
   }
 
   function handleMemberClientCall(
@@ -2672,7 +3143,7 @@ export function scanCalls(
   traverseAst(ast, {
     CallExpression(callPath: NodePath<t.CallExpression>) {
       const { node } = callPath;
-      const loc = locationFromNode(node);
+      const loc = locationFromCallNode(node);
 
       const hook = hookCallInfo(node.callee, context);
       if (hook) {
@@ -2738,7 +3209,7 @@ export function scanCalls(
 
     OptionalCallExpression(optionalCallPath: NodePath<t.OptionalCallExpression>) {
       const { node } = optionalCallPath;
-      const loc = locationFromNode(node);
+      const loc = locationFromCallNode(node);
       handleMemberClientCall(optionalCallPath, node.callee, node.arguments, loc);
     },
 

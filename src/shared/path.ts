@@ -1,5 +1,19 @@
+export interface ProjectScope {
+  root: string;
+  project: string;
+}
+
 export function normalizePathSegments(input: string): string[] {
   return input.split('/').filter(Boolean);
+}
+
+export function depthFromPath(filePath: string): number {
+  const parts = normalizePathSegments(filePath);
+  if (parts.length <= 1) {
+    return 0;
+  }
+
+  return parts.length - 1;
 }
 
 export function stripWorkspacePrefix(filePath: string, workspace: string): string {
@@ -15,7 +29,7 @@ export function stripWorkspacePrefix(filePath: string, workspace: string): strin
   return filePath.slice(prefix.length);
 }
 
-export function parseProjectScope(metricScope: unknown): { root: string; project: string } | null {
+export function parseProjectScope(metricScope: unknown): ProjectScope | null {
   if (typeof metricScope !== 'string') {
     return null;
   }

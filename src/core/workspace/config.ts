@@ -1,7 +1,7 @@
 import * as vscode from 'vscode';
 
 import { DEFAULT_EXCLUDE, DEFAULT_INCLUDE } from './glob';
-import type { LayoutConfig, ScanScope } from '../../shared/types';
+import type { LayoutConfig, ScanScope } from '../../shared/contracts';
 
 export function getScanScopeConfig(): ScanScope {
   const config = vscode.workspace.getConfiguration('rqv');
