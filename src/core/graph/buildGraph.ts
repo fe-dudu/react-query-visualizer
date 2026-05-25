@@ -1,7 +1,12 @@
 import type { GraphRoot, PendingActionToQueryLink } from './graphBuilder';
 import { makeActionNodeId, makeFileNodeId, makeQueryKeyNodeId } from './nodeIds';
 import { mapParseErrors, normalizeFilePath, projectScopeForFile, toDisplayPath } from './paths';
-import { actionAffectsDeclaredQueryKey, isDeclarationAnchorRecord, isWildcardQueryKey } from './queryKeyMatching';
+import {
+  actionAffectsDeclaredQueryKey,
+  isDeclarationAnchorRecord,
+  isPlaceholderOnlyQueryKey,
+  isWildcardQueryKey,
+} from './queryKeyMatching';
 import type { AnalysisResult, GraphData, GraphNode, QueryRecord } from '../../shared/contracts';
 
 export function buildGraph(roots: GraphRoot[], analysis: AnalysisResult): GraphData {
@@ -36,7 +41,9 @@ export function buildGraph(roots: GraphRoot[], analysis: AnalysisResult): GraphD
     const fileNodeId = makeFileNodeId(absoluteFile);
     const actionNodeId = makeActionNodeId(record, index);
     const wildcardQuery = isWildcardQueryKey(record);
-    const queryKeyNodeId = wildcardQuery ? undefined : makeQueryKeyNodeId(projectScope, record.queryKey.display);
+    const placeholderOnlyQuery = isPlaceholderOnlyQueryKey(record.queryKey);
+    const queryKeyNodeId =
+      wildcardQuery || placeholderOnlyQuery ? undefined : makeQueryKeyNodeId(projectScope, record.queryKey.display);
 
     if (!nodeMap.has(fileNodeId)) {
       nodeMap.set(fileNodeId, {
@@ -310,7 +317,17 @@ export function buildGraph(roots: GraphRoot[], analysis: AnalysisResult): GraphD
     }
   }
 
-  const nodes = [...nodeMap.values()];
+  const nodes = [...nodeMap.values()].filter((node) => {
+    if (node.kind !== 'queryKey') {
+      return true;
+    }
+
+    const affectedFiles = Number(node.metrics?.affectedFiles ?? 0);
+    const declaredCallsites = Number(node.metrics?.declaredCallsites ?? 0);
+
+    // Drop orphan query keys that were only inferred from unresolved expressions.
+    return affectedFiles > 0 || declaredCallsites > 0;
+  });
   const allowedNodeIds = new Set(nodes.map((node) => node.id));
   const edges = [...edgeMap.values()].filter(
     (edge) => allowedNodeIds.has(edge.source) && allowedNodeIds.has(edge.target),
