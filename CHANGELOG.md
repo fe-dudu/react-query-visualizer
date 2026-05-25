@@ -1,5 +1,11 @@
 # react-query-visualizer
 
+## 0.0.7
+
+### Patch Changes
+
+- [#19](https://github.com/fe-dudu/react-query-visualizer/pull/19) [`65a8182`](https://github.com/fe-dudu/react-query-visualizer/commit/65a81824742804a75a9f9e9ee21b3437637af3ea) Thanks [@fe-dudu](https://github.com/fe-dudu)! - Preserve real query keys in analysis and graph output, and keep graph selection stable while reducing render cost.
+
 ## 0.0.6
 
 ### Patch Changes
