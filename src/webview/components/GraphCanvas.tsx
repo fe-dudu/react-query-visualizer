@@ -9,11 +9,9 @@ import {
   type NodeMouseHandler,
   type NodeTypes,
   ReactFlow,
-  useEdgesState,
-  useNodesState,
   useReactFlow,
 } from '@xyflow/react';
-import { type SetStateAction, useEffect, useMemo, useRef, useState } from 'react';
+import { type SetStateAction, useEffect, useMemo, useState } from 'react';
 
 import { RqvFlowNode } from './FlowNode';
 import { LeftPanel } from './LeftPanel';
@@ -46,6 +44,65 @@ import { buildRelatedFiles } from '../utils/relatedFiles';
 import { revealCallsiteInCode, revealFileInCode, revealNodeInCode } from '../utils/reveal';
 import { buildSelectedTrail } from '../utils/selectedTrail';
 import { cx } from '../utils/utils';
+
+function mergeRenderGraph(
+  renderGraph: { nodes: Node[]; edges: Edge[] },
+  flowGraph: { nodes: Node[]; edges: Edge[] },
+): { nodes: Node[]; edges: Edge[] } {
+  if (renderGraph.nodes.length === 0 && renderGraph.edges.length === 0) {
+    return renderGraph;
+  }
+
+  const flowNodeById = new Map(flowGraph.nodes.map((node) => [node.id, node]));
+  const flowEdgeById = new Map(flowGraph.edges.map((edge) => [edge.id, edge]));
+
+  return {
+    nodes: renderGraph.nodes.map((node) => {
+      const currentNode = flowNodeById.get(node.id);
+      if (!currentNode) {
+        return node;
+      }
+
+      return {
+        ...node,
+        data: currentNode.data,
+        style: {
+          ...node.style,
+          ...currentNode.style,
+        },
+      };
+    }),
+    edges: renderGraph.edges.map((edge) => {
+      const currentEdge = flowEdgeById.get(edge.id);
+      if (!currentEdge) {
+        return edge;
+      }
+
+      const renderData = edge.data as FlowEdgeData | undefined;
+      const currentData = currentEdge.data as FlowEdgeData | undefined;
+
+      return {
+        ...edge,
+        type: currentEdge.type,
+        sourceHandle: currentEdge.sourceHandle,
+        targetHandle: currentEdge.targetHandle,
+        data: {
+          relation: currentData?.relation ?? renderData?.relation ?? 'invalidates',
+          dim: currentData?.dim ?? renderData?.dim ?? false,
+          highlighted: currentData?.highlighted ?? renderData?.highlighted ?? false,
+          laneOffset: Number(renderData?.laneOffset ?? currentData?.laneOffset ?? 0),
+        } satisfies FlowEdgeData,
+        style: {
+          ...edge.style,
+          ...currentEdge.style,
+        },
+        className: currentEdge.className ?? edge.className,
+        animated: currentEdge.animated ?? edge.animated,
+      };
+    }),
+  };
+}
+
 export function GraphCanvas({ payload }: { payload: WebviewPayload }) {
   const [filters, setFilters] = useState<FilterState>(defaultFilters);
   const [selectedId, setSelectedId] = useState<string | null>(null);
@@ -87,7 +144,6 @@ export function GraphCanvas({ payload }: { payload: WebviewPayload }) {
       }),
     [visible, filters.search, selectedTrail, selectedId],
   );
-  const latestFlowGraphRef = useRef(flowGraph);
   const layoutFlowGraph = useMemo(
     () =>
       buildFlowGraph(visible, '', {
@@ -102,11 +158,15 @@ export function GraphCanvas({ payload }: { payload: WebviewPayload }) {
     [layoutFlowGraph.nodes, visible, queryCallsiteImpactById],
   );
 
-  const [nodes, setNodes, onNodesChange] = useNodesState<Node>([]);
-  const [edges, setEdges, onEdgesChange] = useEdgesState<Edge>([]);
+  const [renderGraph, setRenderGraph] = useState<{ nodes: Node[]; edges: Edge[] }>({ nodes: [], edges: [] });
+  const displayGraph = useMemo(() => mergeRenderGraph(renderGraph, flowGraph), [renderGraph, flowGraph]);
 
   const reactFlow = useReactFlow();
   const selectedNode = selectedId ? (graphLayoutIndex.nodeById.get(selectedId) ?? null) : null;
+  const renderedNodeById = useMemo(
+    () => new Map(displayGraph.nodes.map((node) => [node.id, node])),
+    [displayGraph.nodes],
+  );
 
   const nodeTypes = useMemo<NodeTypes>(
     () => ({
@@ -115,58 +175,6 @@ export function GraphCanvas({ payload }: { payload: WebviewPayload }) {
     }),
     [],
   );
-
-  useEffect(() => {
-    latestFlowGraphRef.current = flowGraph;
-  }, [flowGraph]);
-
-  useEffect(() => {
-    if (nodes.length === 0 && edges.length === 0) {
-      return;
-    }
-
-    const flowNodeById = new Map(flowGraph.nodes.map((node) => [node.id, node]));
-    setNodes((previous) =>
-      previous.map((node) => {
-        if (node.id.startsWith('divider:')) {
-          return node;
-        }
-
-        const next = flowNodeById.get(node.id);
-        if (!next) {
-          return node;
-        }
-
-        return {
-          ...node,
-          data: next.data,
-          style: {
-            ...node.style,
-            ...next.style,
-          },
-        };
-      }),
-    );
-
-    const flowEdgeById = new Map(flowGraph.edges.map((edge) => [edge.id, edge]));
-    setEdges((previous) =>
-      previous.map((edge) => {
-        const next = flowEdgeById.get(edge.id);
-        if (!next) {
-          return edge;
-        }
-
-        return {
-          ...edge,
-          type: next.type,
-          sourceHandle: next.sourceHandle,
-          targetHandle: next.targetHandle,
-          data: next.data,
-          style: next.style,
-        };
-      }),
-    );
-  }, [flowGraph.nodes, flowGraph.edges, nodes.length, edges.length, setNodes, setEdges]);
 
   useEffect(() => {
     let cancelled = false;
@@ -202,56 +210,12 @@ export function GraphCanvas({ payload }: { payload: WebviewPayload }) {
         const projectPositionedNodes = arrangeProjectsHorizontally(leftPlacedDeclareNodes, visible, isMonorepo);
         const alignedEdges = applyEdgeGeometryLanes(projectPositionedNodes, layouted.edges);
         const projectDividers = buildProjectDividerNodes(projectPositionedNodes, visible, isMultiProject, isMonorepo);
-        const currentFlowGraph = latestFlowGraphRef.current;
-        const currentFlowNodeById = new Map(currentFlowGraph.nodes.map((node) => [node.id, node]));
-        const currentFlowEdgeById = new Map(currentFlowGraph.edges.map((edge) => [edge.id, edge]));
+        const layoutedWithDividers = [...projectDividers, ...projectPositionedNodes];
 
-        const layoutedNodesWithCurrentVisuals = projectPositionedNodes.map((node) => {
-          const currentNode = currentFlowNodeById.get(node.id);
-          if (!currentNode) {
-            return node;
-          }
-
-          return {
-            ...node,
-            data: currentNode.data,
-            style: {
-              ...node.style,
-              ...currentNode.style,
-            },
-          };
+        setRenderGraph({
+          nodes: layoutedWithDividers,
+          edges: alignedEdges,
         });
-
-        const alignedEdgesWithCurrentVisuals = alignedEdges.map((edge) => {
-          const currentEdge = currentFlowEdgeById.get(edge.id);
-          if (!currentEdge) {
-            return edge;
-          }
-
-          const alignedData = edge.data as FlowEdgeData | undefined;
-          const currentData = currentEdge.data as FlowEdgeData | undefined;
-
-          return {
-            ...edge,
-            type: currentEdge.type,
-            sourceHandle: currentEdge.sourceHandle,
-            targetHandle: currentEdge.targetHandle,
-            data: {
-              relation: currentData?.relation ?? alignedData?.relation ?? 'invalidates',
-              dim: currentData?.dim ?? alignedData?.dim ?? false,
-              highlighted: currentData?.highlighted ?? alignedData?.highlighted ?? false,
-              laneOffset: Number(alignedData?.laneOffset ?? currentData?.laneOffset ?? 0),
-            } satisfies FlowEdgeData,
-            style: currentEdge.style,
-            className: currentEdge.className,
-            animated: currentEdge.animated,
-          };
-        });
-
-        const layoutedWithDividers = [...projectDividers, ...layoutedNodesWithCurrentVisuals];
-
-        setNodes(layoutedWithDividers);
-        setEdges(alignedEdgesWithCurrentVisuals);
 
         reactFlow
           .fitView({ padding: 0.1, duration: 180 })
@@ -294,8 +258,6 @@ export function GraphCanvas({ payload }: { payload: WebviewPayload }) {
     verticalSpacing,
     horizontalSpacing,
     reactFlow,
-    setEdges,
-    setNodes,
     visible,
     isMultiProject,
     isMonorepo,
@@ -327,22 +289,21 @@ export function GraphCanvas({ payload }: { payload: WebviewPayload }) {
       return;
     }
 
-    const currentlySelected =
-      selectedNode?.kind === 'queryKey' &&
-      selectedNode.label === queryKeyLabel &&
-      candidateQueryNodes.some((candidate) => candidate.id === selectedNode.id)
+    let currentlySelected: string | null = null;
+    if (selectedNode?.kind === 'queryKey' && selectedNode.label === queryKeyLabel) {
+      currentlySelected = candidateQueryNodes.some((candidate) => candidate.id === selectedNode.id)
         ? selectedNode.id
         : null;
+    }
 
     if (currentlySelected) {
       setSelectedId(currentlySelected);
       return;
     }
 
-    const layoutNodeById = new Map(nodes.map((node) => [node.id, node]));
     const [targetNode] = [...candidateQueryNodes].sort((a, b) => {
-      const layoutA = layoutNodeById.get(a.id);
-      const layoutB = layoutNodeById.get(b.id);
+      const layoutA = renderedNodeById.get(a.id);
+      const layoutB = renderedNodeById.get(b.id);
 
       if (layoutA && layoutB) {
         if (layoutA.position.y !== layoutB.position.y) {
@@ -428,14 +389,14 @@ export function GraphCanvas({ payload }: { payload: WebviewPayload }) {
           className="bg-zinc-100 dark:bg-zinc-950 [&_.react-flow__controls]:shadow-[0_4px_16px_rgba(0,0,0,0.22)] [&_.react-flow__edge-textbg]:fill-[rgba(250,250,250,0.88)] dark:[&_.react-flow__edge-textbg]:fill-[rgba(24,24,27,0.92)] [&_.react-flow__edge-text]:font-bold"
           proOptions={{ hideAttribution: true }}
           nodeTypes={nodeTypes}
-          nodes={nodes}
-          edges={edges}
-          onNodesChange={onNodesChange}
-          onEdgesChange={onEdgesChange}
+          nodes={displayGraph.nodes}
+          edges={displayGraph.edges}
           onNodeClick={onNodeClick}
           onNodeDoubleClick={onNodeDoubleClick}
           onPaneClick={() => setSelectedId(null)}
           connectionLineType={ConnectionLineType.Bezier}
+          nodesDraggable={false}
+          nodesConnectable={false}
           onlyRenderVisibleElements
           fitView
           minZoom={0.24}
@@ -455,11 +416,11 @@ export function GraphCanvas({ payload }: { payload: WebviewPayload }) {
               background: 'var(--rqv-minimap-bg)',
               border: '1px solid var(--rqv-minimap-border)',
               borderRadius: 10,
-              boxShadow: '0 8px 20px var(--rqv-minimap-shadow)',
+              boxShadow: '0 10px 24px var(--rqv-minimap-shadow)',
               marginRight: 10,
               marginBottom: 10,
               ['--xy-minimap-mask-stroke-color' as string]: 'var(--rqv-minimap-mask-stroke)',
-              ['--xy-minimap-mask-stroke-width' as string]: 2.5,
+              ['--xy-minimap-mask-stroke-width' as string]: 4,
             }}
           />
           <Background variant={BackgroundVariant.Lines} gap={44} size={0.48} color="var(--rqv-grid-color)" />

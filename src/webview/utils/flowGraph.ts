@@ -6,7 +6,6 @@ import { nodeFileDisplay } from './utils';
 import type { GraphData, GraphEdge, GraphNode, GraphRelation } from '../../shared/contracts';
 import type { FlowEdgeData, FlowNodeData } from '../types/viewTypes';
 
-const EDGE_FLOW_DASH = '18 14';
 const FLOW_BEZIER_CURVATURE = 0.42;
 
 function buildActionAndQueryMaps(graph: GraphData): {
@@ -258,8 +257,6 @@ export function buildFlowGraph(
       edgeOpacity = 1;
     }
     const stroke = RELATION_COLOR[edge.relation];
-    const strokeDasharray = highlighted ? EDGE_FLOW_DASH : undefined;
-
     const nextEdge: BuiltInEdge = {
       id: edge.id,
       source: edge.source,
@@ -274,15 +271,10 @@ export function buildFlowGraph(
       } satisfies FlowEdgeData,
       style: {
         stroke,
-        strokeWidth: highlighted ? 3.2 : 2.4,
+        strokeWidth: highlighted ? 2.8 : 2.1,
         opacity: edgeOpacity,
-        strokeDasharray,
-        strokeDashoffset: highlighted ? 0 : undefined,
-        filter: highlighted ? `drop-shadow(0 0 7px ${stroke})` : 'none',
         strokeLinecap: 'round',
       },
-      className: highlighted ? 'rqv-edge-flow' : undefined,
-      animated: highlighted,
       type: 'default',
       pathOptions: {
         curvature: FLOW_BEZIER_CURVATURE,
