@@ -28,6 +28,7 @@ function updateAllowedIdsForMatchedActions(
 
 export function computeVisibleGraph(graph: GraphData, filters: FilterState): GraphData {
   const nodeById = new Map(graph.nodes.map((node) => [node.id, node]));
+  const queryKeyNodeIds = new Set(graph.nodes.filter((node) => node.kind === 'queryKey').map((node) => node.id));
   const enabledActionIds = new Set(
     graph.nodes
       .filter((node) => {
@@ -44,20 +45,6 @@ export function computeVisibleGraph(graph: GraphData, filters: FilterState): Gra
       })
       .map((node) => node.id),
   );
-
-  if (enabledActionIds.size === 0) {
-    return {
-      ...graph,
-      nodes: [],
-      edges: [],
-      summary: {
-        files: 0,
-        actions: 0,
-        queryKeys: 0,
-        parseErrors: graph.parseErrors.length,
-      },
-    };
-  }
 
   const candidateEdges = graph.edges.filter((edge) => {
     const sourceNode = nodeById.get(edge.source);
@@ -77,7 +64,7 @@ export function computeVisibleGraph(graph: GraphData, filters: FilterState): Gra
     return false;
   });
 
-  const candidateNodeIds = new Set<string>();
+  const candidateNodeIds = new Set<string>(queryKeyNodeIds);
   for (const edge of candidateEdges) {
     candidateNodeIds.add(edge.source);
     candidateNodeIds.add(edge.target);
@@ -120,6 +107,9 @@ export function computeVisibleGraph(graph: GraphData, filters: FilterState): Gra
   }
 
   const allowedIds = updateAllowedIdsForMatchedActions(scopedEdges, nodeById, matchedActionIds);
+  for (const queryKeyNodeId of queryKeyNodeIds) {
+    allowedIds.add(queryKeyNodeId);
+  }
   scopedEdges = scopedEdges.filter((edge) => allowedIds.has(edge.source) && allowedIds.has(edge.target));
   scopedNodes = scopedNodes.filter((node) => allowedIds.has(node.id));
 

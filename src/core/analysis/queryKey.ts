@@ -624,8 +624,7 @@ function resolveObjectPropertyExpression(
       continue;
     }
 
-    const spreadSource =
-      resolveQueryKeyExpression(property.argument, resolver, depth + 1) ?? unwrapExpression(property.argument);
+    const spreadSource = resolveActionOptionsObject(property.argument, resolver, depth + 1);
     if (!t.isObjectExpression(spreadSource)) {
       continue;
     }
@@ -668,8 +667,7 @@ function collectObjectArgumentSubstitutions(
       continue;
     }
 
-    const spreadSource =
-      resolveQueryKeyExpression(property.argument, resolver, depth + 1) ?? unwrapExpression(property.argument);
+    const spreadSource = resolveActionOptionsObject(property.argument, resolver, depth + 1);
     if (!t.isObjectExpression(spreadSource)) {
       continue;
     }
@@ -780,7 +778,6 @@ function applyPositionalArgumentHints(
     if (!t.isIdentifier(unwrapped)) {
       return resolvedCall;
     }
-
     placeholderNames.push(unwrapped.name);
   }
 
@@ -791,12 +788,21 @@ function applyPositionalArgumentHints(
   const nextExpression = t.cloneNode(resolvedCall, false);
   let changed = false;
   nextExpression.elements = resolvedCall.elements.map((element, index) => {
+    if (!element || t.isSpreadElement(element) || !t.isExpression(element)) {
+      return element ? t.cloneNode(element, true) : null;
+    }
+
     const arg = callNode.arguments[index];
     if (!arg || t.isSpreadElement(arg) || !t.isExpression(arg)) {
       return element ? t.cloneNode(element, true) : null;
     }
 
     const placeholderName = placeholderNames[index];
+    const resolvedElement = resolveQueryKeyExpression(element, resolver, depth + 1) ?? unwrapExpression(element);
+    if (segmentFromExpression(resolvedElement, resolver, depth + 1).isStatic) {
+      return element ? t.cloneNode(element, true) : null;
+    }
+
     const replacement = resolveQueryKeyExpression(arg, resolver, depth + 1) ?? unwrapExpression(arg);
     if (placeholderName) {
       changed = true;
@@ -1714,8 +1720,7 @@ export function findObjectPropertyValue(
       continue;
     }
 
-    const spreadValue =
-      resolveQueryKeyExpression(property.argument, resolver, depth + 1) ?? unwrapExpression(property.argument);
+    const spreadValue = resolveActionOptionsObject(property.argument, resolver, depth + 1);
     if (!t.isObjectExpression(spreadValue)) {
       continue;
     }

@@ -12,6 +12,18 @@ export function isWildcardQueryKey(record: QueryRecord): boolean {
   return false;
 }
 
+export function isPlaceholderOnlyQueryKey(queryKey: QueryRecord['queryKey']): boolean {
+  return (
+    queryKey.segments.length > 0 &&
+    queryKey.segments.every((segment) => {
+      const normalized = segment.trim();
+      return (
+        normalized.startsWith('$') || normalized === 'UNRESOLVED' || normalized === 'undefined' || normalized === 'null'
+      );
+    })
+  );
+}
+
 export function isDeclarationAnchorRecord(record: Pick<QueryRecord, 'relation' | 'operation' | 'queryKey'>): boolean {
   return record.relation === 'declares';
 }
