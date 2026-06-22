@@ -1,5 +1,11 @@
 # react-query-visualizer
 
+## 0.0.8
+
+### Patch Changes
+
+- [#21](https://github.com/fe-dudu/react-query-visualizer/pull/21) [`6e97679`](https://github.com/fe-dudu/react-query-visualizer/commit/6e97679c20a51fb0b5d3e8f7c609762e2e1cb826) Thanks [@fe-dudu](https://github.com/fe-dudu)! - Fix scan regression by removing deprecated JSX prop scanning and excluding .d.ts files.
+
 ## 0.0.7
 
 ### Patch Changes
