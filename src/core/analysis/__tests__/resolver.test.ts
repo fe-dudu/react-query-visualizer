@@ -847,6 +847,50 @@ describe('core/analysis/resolver', () => {
     resetResolverCache();
   });
 
+  it('resolves aliased function expressions and namespace function declarations', async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), 'rqv-resolver-function-return-'));
+    const files = {
+      'src/values.ts': ["export function namespaceFactory() { return ['namespace-fn'] as const; }"].join('\n'),
+      'src/consumer.ts': [
+        "import * as values from '../values';",
+        "const localFn = () => ['local-fn'] as const;",
+        'const aliasCall = localFn;',
+        'const namespaceCall = values.namespaceFactory();',
+      ].join('\n'),
+    };
+
+    for (const [relativePath, content] of Object.entries(files)) {
+      const filePath = path.join(root, relativePath);
+      await mkdir(path.dirname(filePath), { recursive: true });
+      await writeFile(filePath, content);
+    }
+
+    const sources = new Map<string, ReturnType<typeof parseSource>>();
+    for (const relativePath of Object.keys(files)) {
+      const filePath = path.join(root, relativePath);
+      sources.set(filePath, parseSource(await readFile(filePath, 'utf8'), filePath));
+    }
+
+    const consumerPath = path.join(root, 'src/consumer.ts');
+    const consumerAst = sources.get(consumerPath);
+    if (!consumerAst) {
+      throw new Error('Missing consumer AST');
+    }
+
+    resetResolverCache();
+    const resolver = createQueryKeyResolver(consumerPath, buildSymbolIndex(sources), root);
+    expect(
+      queryKeySegments(normalizeQueryKey(variableInit(consumerAst, 'aliasCall'), { defaultMode: 'exact' }, resolver)),
+    ).toEqual(['local-fn']);
+    expect(
+      queryKeySegments(
+        normalizeQueryKey(variableInit(consumerAst, 'namespaceCall'), { defaultMode: 'exact' }, resolver),
+      ).length,
+    ).toBeGreaterThan(0);
+
+    resetResolverCache();
+  });
+
   it('resolves unique workspace query key factories without imports', async () => {
     const root = await mkdtemp(path.join(os.tmpdir(), 'rqv-resolver-workspace-factory-'));
     const files = {
