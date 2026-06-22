@@ -159,7 +159,6 @@ export function applySearchFilter(graph: GraphData, search: string): GraphData {
     edgesByNodeId.set(edge.target, targetList);
   }
 
-  // Keep direct matches and nearby context (file-action-query chain) to avoid isolated nodes.
   const allowedNodeIds = new Set<string>(matchedNodeIds);
   let frontier = [...matchedNodeIds];
 

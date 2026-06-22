@@ -39,14 +39,7 @@ function estimateNodeHeight(node: Node): number {
   const titleLines = estimateWrappedLineCount(title, TITLE_CHARS_PER_LINE);
   const subtitleLines = estimateWrappedLineCount(subtitle, SUBTITLE_CHARS_PER_LINE);
 
-  // Matches the node card typography roughly, plus safety buffer to avoid visual overlaps.
-  const estimated =
-    22 + // container vertical padding
-    30 + // header row + margin
-    titleLines * 26 + // title 20px, 1.3 line height
-    4 + // title margin-bottom
-    subtitleLines * 22 + // subtitle 16px, 1.35 line height
-    18; // conservative buffer for badges/line wrapping variance
+  const estimated = 22 + 30 + titleLines * 26 + 4 + subtitleLines * 22 + 18;
 
   return Math.max(NODE_MIN_HEIGHT, estimated);
 }

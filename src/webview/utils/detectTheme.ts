@@ -438,6 +438,5 @@ export function hostThemeKindToDark(kind: HostThemeKind | undefined): boolean | 
   if (kind === 1 || kind === 4) {
     return false;
   }
-  // HighContrast(3)은 Cursor/IDE별 구현 차가 있어 강제하지 않음.
   return undefined;
 }

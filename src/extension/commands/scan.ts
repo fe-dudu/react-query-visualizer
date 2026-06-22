@@ -1,7 +1,6 @@
 import * as path from 'node:path';
 import * as vscode from 'vscode';
 
-import { runStaticAnalysis } from '../../core/analysis/analyzer';
 import { buildGraph } from '../../core/graph/buildGraph';
 import type { GraphRoot } from '../../core/graph/graphBuilder';
 import { getLayoutConfig, persistScanScope } from '../../core/workspace/config';
@@ -22,6 +21,7 @@ interface ScanAndPublishOptions {
   persistScopeFlag: boolean;
   activityViewProvider?: RqvActivityViewProvider;
   onPayloadUpdated: (payload: WebviewPayload) => void;
+  runStaticAnalysis: (rootPath: string, scope: ScanScope) => Promise<AnalysisResult>;
 }
 
 function mergeAnalysis(results: AnalysisResult[]): AnalysisResult {
@@ -105,10 +105,6 @@ function buildScannedFiles(
 
   analyses.forEach((analysis, index) => {
     const target = targets[index];
-    if (!target) {
-      return;
-    }
-
     const workspaceName = target.workspace.name;
     analysis.scannedFiles.forEach((absolutePath) => {
       if (seenPaths.has(absolutePath)) {
@@ -130,7 +126,11 @@ function buildScannedFiles(
   return scannedFiles;
 }
 
-export async function runScan(workspaces: vscode.WorkspaceFolder[], scope: ScanScope): Promise<ScanRunResult> {
+export async function runScan(
+  workspaces: vscode.WorkspaceFolder[],
+  scope: ScanScope,
+  runStaticAnalysis: (rootPath: string, scope: ScanScope) => Promise<AnalysisResult>,
+): Promise<ScanRunResult> {
   const targets = workspaces
     .map((workspace) => ({
       workspace,
@@ -173,6 +173,7 @@ export async function scanAndPublish({
   persistScopeFlag,
   activityViewProvider,
   onPayloadUpdated,
+  runStaticAnalysis,
 }: ScanAndPublishOptions): Promise<void> {
   const workspaces = getWorkspaceFolders();
   if (workspaces.length === 0) {
@@ -194,7 +195,7 @@ export async function scanAndPublish({
     },
     async (progress) => {
       progress.report({ message: 'Collecting source files...' });
-      const scanResult = await runScan(workspaces, scope);
+      const scanResult = await runScan(workspaces, scope, runStaticAnalysis);
       progress.report({ message: 'Building graph...' });
       return scanResult;
     },

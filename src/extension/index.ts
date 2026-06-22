@@ -1,6 +1,7 @@
 import * as vscode from 'vscode';
 
 import { revealInCode } from './commands/reveal';
+import { runStaticAnalysis } from '../core/analysis/analyzer';
 import { RqvActivityViewProvider } from './views/activityView';
 import { GraphPanel } from './views/graphPanel';
 import { getDefaultScopeWorkspace, getWorkspaceFolders } from './workspace/folders';
@@ -67,6 +68,7 @@ export function activate(context: vscode.ExtensionContext): void {
       persistScopeFlag: false,
       activityViewProvider,
       onPayloadUpdated: setLatestPayload,
+      runStaticAnalysis,
     });
   });
 
@@ -90,6 +92,7 @@ export function activate(context: vscode.ExtensionContext): void {
       persistScopeFlag: true,
       activityViewProvider,
       onPayloadUpdated: setLatestPayload,
+      runStaticAnalysis,
     });
   });
 
@@ -109,8 +112,4 @@ export function activate(context: vscode.ExtensionContext): void {
     scanWithScope,
     reveal,
   );
-}
-
-export function deactivate(): void {
-  // no-op
 }

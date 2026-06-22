@@ -52,6 +52,5 @@ export function isDeclareActionNode(node: GraphNode | undefined): node is GraphN
     return directMetric > 0;
   }
 
-  // Backward compatibility for payloads created before declaresDirectly existed.
   return !/^use[A-Z]/.test(node.label);
 }

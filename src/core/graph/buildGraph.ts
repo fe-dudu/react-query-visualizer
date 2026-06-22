@@ -325,7 +325,6 @@ export function buildGraph(roots: GraphRoot[], analysis: AnalysisResult): GraphD
     const affectedFiles = Number(node.metrics?.affectedFiles ?? 0);
     const declaredCallsites = Number(node.metrics?.declaredCallsites ?? 0);
 
-    // Drop orphan query keys that were only inferred from unresolved expressions.
     return affectedFiles > 0 || declaredCallsites > 0;
   });
   const allowedNodeIds = new Set(nodes.map((node) => node.id));

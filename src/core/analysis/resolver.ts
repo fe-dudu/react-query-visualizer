@@ -49,6 +49,47 @@ function commonPathPrefixLength(left: string, right: string): number {
   return count;
 }
 
+function compareResolutionCandidates(fromDir: string, a: string, b: string): number {
+  const aDir = path.dirname(a);
+  const bDir = path.dirname(b);
+
+  const commonA = commonPathPrefixLength(fromDir, aDir);
+  const commonB = commonPathPrefixLength(fromDir, bDir);
+  if (commonA !== commonB) {
+    return commonB - commonA;
+  }
+  const relativeA = path.relative(fromDir, aDir);
+  const relativeB = path.relative(fromDir, bDir);
+  const upA = relativeA.split(path.sep).filter((segment) => segment === '..').length;
+  const upB = relativeB.split(path.sep).filter((segment) => segment === '..').length;
+  if (upA !== upB) {
+    return upA - upB;
+  }
+  const distanceA = relativeA.split(path.sep).filter(Boolean).length;
+  const distanceB = relativeB.split(path.sep).filter(Boolean).length;
+  if (distanceA !== distanceB) {
+    return distanceA - distanceB;
+  }
+  if (a.length !== b.length) {
+    return a.length - b.length;
+  }
+  return a.localeCompare(b);
+}
+
+function candidatePathsForTarget(target: string): string[] {
+  const hasExplicitExtension = RESOLVE_EXTENSIONS.some((ext) => target.endsWith(ext));
+  return hasExplicitExtension
+    ? [target]
+    : [
+        ...RESOLVE_EXTENSIONS.map((ext) => `${target}${ext}`),
+        ...RESOLVE_EXTENSIONS.map((ext) => path.join(target, `index${ext}`)),
+      ];
+}
+
+function importBindingExportName(binding: ImportBinding): string {
+  return binding.kind === 'default' ? 'default' : (binding.imported ?? 'default');
+}
+
 function isLikelyQueryKeyFactoryIdentifier(name: string): boolean {
   if (!name) {
     return false;
@@ -194,7 +235,6 @@ function parseJsonObject(text: string): Record<string, unknown> | undefined {
   } catch {
     return undefined;
   }
-
   return undefined;
 }
 
@@ -218,6 +258,26 @@ function asStringArray(value: unknown): string[] | undefined {
   }
 
   return output.length > 0 ? output : undefined;
+}
+
+function valueOrFallback<T>(value: T | undefined, fallback: T): T {
+  return value === undefined ? fallback : value;
+}
+
+function isFunctionExpressionLike(node: unknown): node is t.FunctionExpression | t.ArrowFunctionExpression {
+  return t.isFunctionExpression(node) || t.isArrowFunctionExpression(node);
+}
+
+function extractReturnFromFunctionLike(
+  node: t.Expression | t.FunctionDeclaration | undefined,
+): t.Expression | undefined {
+  if (!node) {
+    return undefined;
+  }
+  if (isFunctionExpressionLike(node) || t.isFunctionDeclaration(node)) {
+    return extractFunctionReturnExpression(node);
+  }
+  return undefined;
 }
 
 function resolveExtendsConfigPath(configDir: string, extendsValue: string): string | undefined {
@@ -244,11 +304,8 @@ function resolveExtendsConfigPath(configDir: string, extendsValue: string): stri
     try {
       const resolved = NODE_REQUIRE.resolve(candidate, { paths: [configDir] });
       return normalizeAnalyzerPath(resolved);
-    } catch {
-      // try next package candidate
-    }
+    } catch {}
   }
-
   return undefined;
 }
 
@@ -258,7 +315,6 @@ function mergePathAliases(configPath: string, seen: Set<string>): ResolvedPathAl
   if (cached) {
     return cached;
   }
-
   if (seen.has(normalizedConfig)) {
     return { paths: new Map() };
   }
@@ -379,11 +435,9 @@ function getPathAliasEntries(fromFile: string, workspaceRoot: string): PathAlias
       if (leftHasWildcard !== rightHasWildcard) {
         return leftHasWildcard ? 1 : -1;
       }
-
       if (left.pattern.length !== right.pattern.length) {
         return right.pattern.length - left.pattern.length;
       }
-
       return left.pattern.localeCompare(right.pattern);
     });
 
@@ -421,11 +475,22 @@ function propertyNameFromMemberExpression(
   if (t.isNumericLiteral(node.property)) {
     return String(node.property.value);
   }
-
   if (t.isExpression(node.property)) {
     return getExpressionValue(node.property);
   }
+  return undefined;
+}
 
+function staticPropertyKeyName(key: t.Expression | t.PrivateName): string | undefined {
+  if (t.isIdentifier(key)) {
+    return key.name;
+  }
+  if (t.isStringLiteral(key)) {
+    return key.value;
+  }
+  if (t.isNumericLiteral(key)) {
+    return String(key.value);
+  }
   return undefined;
 }
 
@@ -435,20 +500,13 @@ function objectPropertyValue(objectNode: t.ObjectExpression, propertyName: strin
       continue;
     }
 
-    const key = property.key;
-    let keyName: string | undefined;
-    if (t.isIdentifier(key)) {
-      keyName = key.name;
-    } else if (t.isStringLiteral(key)) {
-      keyName = key.value;
-    }
+    const keyName = staticPropertyKeyName(property.key);
     if (!keyName || keyName !== propertyName || !t.isExpression(property.value)) {
       continue;
     }
 
     return unwrapExpression(property.value);
   }
-
   return undefined;
 }
 
@@ -479,11 +537,9 @@ function callCalleeName(callee: t.CallExpression['callee']): string | undefined 
   if (t.isIdentifier(callee)) {
     return callee.name;
   }
-
   if (t.isMemberExpression(callee) && !callee.computed && t.isIdentifier(callee.property)) {
     return callee.property.name;
   }
-
   return undefined;
 }
 
@@ -502,7 +558,6 @@ function isIdentityWrapperCall(callee: t.CallExpression['callee']): boolean {
   if (t.isIdentifier(callee) && (callee.name === 'queryOptions' || callee.name === 'infiniteQueryOptions')) {
     return true;
   }
-
   if (
     t.isMemberExpression(callee) &&
     !callee.computed &&
@@ -534,13 +589,7 @@ function resolveModuleFile(
 
       for (const targetPattern of entry.targets) {
         const target = targetPattern.includes('*') ? targetPattern.replace(/\*/g, captured) : targetPattern;
-        const hasExplicitExtension = RESOLVE_EXTENSIONS.some((ext) => target.endsWith(ext));
-        const candidates = hasExplicitExtension
-          ? [target]
-          : [
-              ...RESOLVE_EXTENSIONS.map((ext) => `${target}${ext}`),
-              ...RESOLVE_EXTENSIONS.map((ext) => path.join(target, `index${ext}`)),
-            ];
+        const candidates = candidatePathsForTarget(target);
 
         for (const candidate of candidates) {
           const normalized = normalizeAnalyzerPath(candidate);
@@ -560,45 +609,13 @@ function resolveModuleFile(
     }
 
     const fromDir = path.dirname(normalizeAnalyzerPath(fromFile));
-    const uniqueMatches = [...new Set(matches)].sort((a, b) => {
-      const aDir = path.dirname(a);
-      const bDir = path.dirname(b);
-
-      const commonA = commonPathPrefixLength(fromDir, aDir);
-      const commonB = commonPathPrefixLength(fromDir, bDir);
-      if (commonA !== commonB) {
-        return commonB - commonA;
-      }
-
-      const relativeA = path.relative(fromDir, aDir);
-      const relativeB = path.relative(fromDir, bDir);
-
-      const upA = relativeA.split(path.sep).filter((segment) => segment === '..').length;
-      const upB = relativeB.split(path.sep).filter((segment) => segment === '..').length;
-      if (upA !== upB) {
-        return upA - upB;
-      }
-
-      const distanceA = relativeA.split(path.sep).filter(Boolean).length;
-      const distanceB = relativeB.split(path.sep).filter(Boolean).length;
-      if (distanceA !== distanceB) {
-        return distanceA - distanceB;
-      }
-
-      if (a.length !== b.length) {
-        return a.length - b.length;
-      }
-
-      return a.localeCompare(b);
-    });
+    const uniqueMatches = [...new Set(matches)].sort((a, b) => compareResolutionCandidates(fromDir, a, b));
 
     return uniqueMatches[0];
   }
-
   const base = isAbsolute ? source : path.resolve(path.dirname(fromFile), source);
   const candidates: string[] = [];
   const hasExplicitExtension = RESOLVE_EXTENSIONS.some((ext) => source.endsWith(ext));
-
   if (hasExplicitExtension) {
     candidates.push(base);
   } else {
@@ -769,7 +786,10 @@ function expressionToLiteralString(
   depth: number,
   seen: Set<string>,
 ): string | undefined {
-  const resolved = resolveReferenceInternal(filePath, expression, depth + 1, seen) ?? unwrapExpression(expression);
+  const resolved = valueOrFallback(
+    resolveReferenceInternal(filePath, expression, depth + 1, seen),
+    unwrapExpression(expression),
+  );
   if (t.isStringLiteral(resolved)) {
     return resolved.value;
   }
@@ -825,11 +845,16 @@ export function createQueryKeyResolver(filePath: string, index: SymbolIndex, wor
       const ast = parseSource(raw, normalizedTargetFile);
       index.files.set(normalizedTargetFile, buildFileSymbols(normalizedTargetFile, ast));
       index.fileSet.add(normalizedTargetFile);
-    } catch {
-      // Ignore unparseable support files and let normal resolution fail closed.
-    }
+    } catch {}
   };
 
+  const resolveReferenceOrFallback = (
+    fromFile: string,
+    expression: t.Expression,
+    fallback: t.Expression,
+    depth: number,
+    seen: Set<string>,
+  ): t.Expression => valueOrFallback(resolveReferenceInternal(fromFile, expression, depth, seen), fallback);
   const resolveExportValue = (
     targetFile: string,
     exportName: string,
@@ -883,7 +908,6 @@ export function createQueryKeyResolver(filePath: string, index: SymbolIndex, wor
       if (!nestedFile) {
         continue;
       }
-
       const nestedName = reExport.imported ?? exportName;
       const value = resolveExportValue(nestedFile, nestedName, depth + 1, seen);
       if (value) {
@@ -938,7 +962,6 @@ export function createQueryKeyResolver(filePath: string, index: SymbolIndex, wor
 
         continue;
       }
-
       if (reExport.exported !== exportName) {
         continue;
       }
@@ -947,7 +970,6 @@ export function createQueryKeyResolver(filePath: string, index: SymbolIndex, wor
       if (!nestedFile) {
         continue;
       }
-
       const nestedName = reExport.imported ?? exportName;
       const value = resolveExportFunctionReturn(nestedFile, nestedName, depth + 1, seen);
       if (value) {
@@ -972,8 +994,7 @@ export function createQueryKeyResolver(filePath: string, index: SymbolIndex, wor
     if (!targetFile) {
       return undefined;
     }
-
-    const exportName = binding.kind === 'default' ? 'default' : (binding.imported ?? 'default');
+    const exportName = importBindingExportName(binding);
     return resolveExportValue(targetFile, exportName, depth + 1, seen);
   };
 
@@ -991,8 +1012,7 @@ export function createQueryKeyResolver(filePath: string, index: SymbolIndex, wor
     if (!targetFile) {
       return undefined;
     }
-
-    const exportName = binding.kind === 'default' ? 'default' : (binding.imported ?? 'default');
+    const exportName = importBindingExportName(binding);
     return resolveExportFunctionReturn(targetFile, exportName, depth + 1, seen);
   };
 
@@ -1058,7 +1078,10 @@ export function createQueryKeyResolver(filePath: string, index: SymbolIndex, wor
         }
       }
       if (t.isIdentifier(localValue) && localValue.name !== localName) {
-        const resolvedAlias = resolveLocalValue(fromFile, localValue.name, depth + 1, seen) ?? localValue;
+        const resolvedAlias = valueOrFallback(
+          resolveLocalValue(fromFile, localValue.name, depth + 1, seen),
+          localValue,
+        );
         return markExpressionOrigin(resolvedAlias, fromFile);
       }
 
@@ -1116,12 +1139,10 @@ export function createQueryKeyResolver(filePath: string, index: SymbolIndex, wor
       if (t.isIdentifier(localValue) && localValue.name !== localName) {
         return resolveLocalFunctionReturn(fromFile, localValue.name, depth + 1, seen);
       }
-
-      if (t.isFunctionExpression(localValue) || t.isArrowFunctionExpression(localValue)) {
+      if (isFunctionExpressionLike(localValue)) {
         const returned = extractFunctionReturnExpression(localValue);
         return markExpressionOrigin(returned, fromFile);
       }
-
       return undefined;
     }
 
@@ -1168,12 +1189,10 @@ export function createQueryKeyResolver(filePath: string, index: SymbolIndex, wor
       if (refreshedSymbols.mutableValues.has(localName)) {
         return undefined;
       }
-
       if (t.isIdentifier(localValue) && localValue.name !== localName) {
         return resolveLocalFunctionNode(fromFile, localValue.name, depth + 1, seen);
       }
-
-      if (t.isFunctionExpression(localValue) || t.isArrowFunctionExpression(localValue)) {
+      if (isFunctionExpressionLike(localValue)) {
         return localValue;
       }
     }
@@ -1199,7 +1218,6 @@ export function createQueryKeyResolver(filePath: string, index: SymbolIndex, wor
         names.push(param.name);
         continue;
       }
-
       if (t.isAssignmentPattern(param) && t.isIdentifier(param.left)) {
         names.push(param.left.name);
       }
@@ -1241,7 +1259,6 @@ export function createQueryKeyResolver(filePath: string, index: SymbolIndex, wor
         stack.push({ node: child, asReference: childIsReference });
       });
     }
-
     return false;
   }
 
@@ -1264,15 +1281,10 @@ export function createQueryKeyResolver(filePath: string, index: SymbolIndex, wor
           if (!element) {
             return null;
           }
-
           if (t.isSpreadElement(element)) {
-            if (!t.isExpression(element.argument)) {
-              return t.cloneNode(element, true);
-            }
-            return t.spreadElement(replaceExpression(element.argument));
+            return t.spreadElement(replaceExpression(element.argument as t.Expression));
           }
-
-          return t.isExpression(element) ? replaceExpression(element) : t.cloneNode(element, true);
+          return replaceExpression(element as t.Expression);
         });
         return cloned;
       }
@@ -1281,31 +1293,23 @@ export function createQueryKeyResolver(filePath: string, index: SymbolIndex, wor
         const cloned = t.cloneNode(node, false);
         cloned.properties = cloned.properties.map((property) => {
           if (t.isSpreadElement(property)) {
-            if (!t.isExpression(property.argument)) {
-              return t.cloneNode(property, true);
-            }
-            return t.spreadElement(replaceExpression(property.argument));
+            return t.spreadElement(replaceExpression(property.argument as t.Expression));
           }
-
-          if (t.isObjectProperty(property) && t.isExpression(property.value)) {
-            const nextValue = replaceExpression(property.value);
+          if (t.isObjectProperty(property)) {
+            const nextValue = replaceExpression(property.value as t.Expression);
             const next = {
               ...t.cloneNode(property, false),
               value: nextValue,
             } as t.ObjectProperty;
             return next;
           }
-
           return t.cloneNode(property, true);
         });
         return cloned;
       }
-
       if (t.isMemberExpression(node)) {
         const cloned = t.cloneNode(node, false);
-        if (t.isExpression(cloned.object)) {
-          cloned.object = replaceExpression(cloned.object);
-        }
+        cloned.object = replaceExpression(cloned.object as t.Expression);
         if (cloned.computed && t.isExpression(cloned.property)) {
           cloned.property = replaceExpression(cloned.property);
         }
@@ -1314,45 +1318,35 @@ export function createQueryKeyResolver(filePath: string, index: SymbolIndex, wor
 
       if (t.isCallExpression(node)) {
         const cloned = t.cloneNode(node, false);
-        if (t.isExpression(cloned.callee)) {
-          cloned.callee = replaceExpression(cloned.callee);
-        }
+        cloned.callee = replaceExpression(cloned.callee as t.Expression);
         cloned.arguments = cloned.arguments.map((arg) => {
           if (t.isSpreadElement(arg) && t.isExpression(arg.argument)) {
             return t.spreadElement(replaceExpression(arg.argument));
           }
-          return t.isExpression(arg) ? replaceExpression(arg) : t.cloneNode(arg, true);
+          return replaceExpression(arg as t.Expression);
         });
         return cloned;
       }
-
       if (t.isTemplateLiteral(node)) {
         const cloned = t.cloneNode(node, false);
-        cloned.expressions = cloned.expressions.map((expr) =>
-          t.isExpression(expr) ? replaceExpression(expr) : t.cloneNode(expr, true),
-        );
+        const expressions: typeof cloned.expressions = [];
+        for (const expr of cloned.expressions) {
+          expressions.push(replaceExpression(expr as t.Expression));
+        }
+        cloned.expressions = expressions;
         return cloned;
       }
-
       if (t.isUnaryExpression(node) || t.isUpdateExpression(node)) {
         const cloned = t.cloneNode(node, false);
-        if (t.isExpression(cloned.argument)) {
-          cloned.argument = replaceExpression(cloned.argument);
-        }
+        cloned.argument = replaceExpression(cloned.argument as t.Expression);
         return cloned;
       }
-
       if (t.isBinaryExpression(node) || t.isLogicalExpression(node) || t.isAssignmentExpression(node)) {
         const cloned = t.cloneNode(node, false);
-        if (t.isExpression(cloned.left)) {
-          cloned.left = replaceExpression(cloned.left);
-        }
-        if (t.isExpression(cloned.right)) {
-          cloned.right = replaceExpression(cloned.right);
-        }
+        cloned.left = replaceExpression(cloned.left as t.Expression);
+        cloned.right = replaceExpression(cloned.right as t.Expression);
         return cloned;
       }
-
       if (t.isConditionalExpression(node)) {
         const cloned = t.cloneNode(node, false);
         cloned.test = replaceExpression(cloned.test);
@@ -1360,13 +1354,15 @@ export function createQueryKeyResolver(filePath: string, index: SymbolIndex, wor
         cloned.alternate = replaceExpression(cloned.alternate);
         return cloned;
       }
-
       if (t.isSequenceExpression(node)) {
         const cloned = t.cloneNode(node, false);
-        cloned.expressions = cloned.expressions.map((expr) => replaceExpression(expr));
+        const expressions: typeof cloned.expressions = [];
+        for (const expr of cloned.expressions) {
+          expressions.push(replaceExpression(expr));
+        }
+        cloned.expressions = expressions;
         return cloned;
       }
-
       if (t.isParenthesizedExpression(node)) {
         const cloned = t.cloneNode(node, false);
         cloned.expression = replaceExpression(cloned.expression);
@@ -1400,7 +1396,7 @@ export function createQueryKeyResolver(filePath: string, index: SymbolIndex, wor
       }
 
       const paramName = paramNames[index];
-      const replacement = resolveReferenceInternal(fromFile, arg, depth + 1, seen) ?? unwrapExpression(arg);
+      const replacement = resolveReferenceOrFallback(fromFile, arg, unwrapExpression(arg), depth + 1, seen);
       if (!expressionContainsIdentifier(nextExpression, paramName)) {
         continue;
       }
@@ -1430,36 +1426,33 @@ export function createQueryKeyResolver(filePath: string, index: SymbolIndex, wor
         }
       }
     }
-
-    const resolvedReference = t.isExpression(callNode.callee)
-      ? resolveReferenceInternal(fromFile, callNode.callee, depth + 1, seen)
-      : undefined;
-    if (
-      resolvedReference &&
-      (t.isFunctionExpression(resolvedReference) ||
-        t.isArrowFunctionExpression(resolvedReference) ||
-        t.isFunctionDeclaration(resolvedReference))
-    ) {
-      const returned = extractFunctionReturnExpression(resolvedReference);
-      if (returned) {
-        return applyFunctionArgumentHints(fromFile, callNode, resolvedReference, returned, depth + 1, seen);
-      }
+    const resolvedReference = resolveReferenceInternal(fromFile, callNode.callee, depth + 1, seen);
+    const returnedFromReference = extractReturnFromFunctionLike(resolvedReference);
+    if (resolvedReference && returnedFromReference) {
+      return applyFunctionArgumentHints(
+        fromFile,
+        callNode,
+        resolvedReference as t.FunctionDeclaration | t.FunctionExpression | t.ArrowFunctionExpression,
+        returnedFromReference,
+        depth + 1,
+        seen,
+      );
     }
 
     const resolved = resolveCallResultInternal(fromFile, callNode.callee, depth + 1, seen);
     if (!resolved) {
       return undefined;
     }
-
-    if (
-      t.isFunctionExpression(resolved) ||
-      t.isArrowFunctionExpression(resolved) ||
-      t.isFunctionDeclaration(resolved)
-    ) {
-      const returned = extractFunctionReturnExpression(resolved);
-      if (returned) {
-        return applyFunctionArgumentHints(fromFile, callNode, resolved, returned, depth + 1, seen);
-      }
+    const returnedFromResolved = extractReturnFromFunctionLike(resolved);
+    if (returnedFromResolved) {
+      return applyFunctionArgumentHints(
+        fromFile,
+        callNode,
+        resolved as t.FunctionDeclaration | t.FunctionExpression | t.ArrowFunctionExpression,
+        returnedFromResolved,
+        depth + 1,
+        seen,
+      );
     }
 
     return resolved;
@@ -1487,32 +1480,25 @@ export function createQueryKeyResolver(filePath: string, index: SymbolIndex, wor
       if (!fromValues) {
         continue;
       }
-
-      if (!t.isFunctionExpression(fromValues) && !t.isArrowFunctionExpression(fromValues)) {
+      if (!isFunctionExpressionLike(fromValues)) {
         continue;
       }
-
       const returned = extractFunctionReturnExpression(fromValues);
       if (!returned) {
         continue;
       }
-
       candidates.push({
         filePath: candidateFile,
         expression: returned,
         score: commonPathPrefixLength(fromFile, candidateFile),
       });
     }
-
     if (candidates.length === 0) {
       return undefined;
     }
 
     candidates.sort((left, right) => right.score - left.score || left.filePath.localeCompare(right.filePath));
     const [best, second] = candidates;
-    if (!best) {
-      return undefined;
-    }
 
     if (second && second.score === best.score && second.filePath !== best.filePath) {
       return undefined;
@@ -1534,33 +1520,26 @@ export function createQueryKeyResolver(filePath: string, index: SymbolIndex, wor
 
     for (let index = objectNode.properties.length - 1; index >= 0; index -= 1) {
       const property = objectNode.properties[index];
-      if (!property) {
-        continue;
-      }
 
       if (t.isObjectProperty(property)) {
-        const key = property.key;
-        let keyName: string | undefined;
-        if (t.isIdentifier(key)) {
-          keyName = key.name;
-        } else if (t.isStringLiteral(key)) {
-          keyName = key.value;
-        } else if (t.isNumericLiteral(key)) {
-          keyName = String(key.value);
-        }
+        const keyName = staticPropertyKeyName(property.key);
 
-        if (keyName === propertyName && t.isExpression(property.value)) {
+        if (keyName === propertyName) {
           return markExpressionOrigin(unwrapExpression(property.value), fromFile);
         }
         continue;
       }
-
-      if (!t.isSpreadElement(property) || !t.isExpression(property.argument)) {
+      if (!t.isSpreadElement(property)) {
         continue;
       }
 
-      const spreadValue =
-        resolveReferenceInternal(fromFile, property.argument, depth + 1, seen) ?? unwrapExpression(property.argument);
+      const spreadValue = resolveReferenceOrFallback(
+        fromFile,
+        property.argument,
+        unwrapExpression(property.argument),
+        depth + 1,
+        seen,
+      );
       if (!t.isObjectExpression(spreadValue)) {
         continue;
       }
@@ -1605,13 +1584,13 @@ export function createQueryKeyResolver(filePath: string, index: SymbolIndex, wor
         }
       }
     }
-
-    if (!t.isExpression(node.object)) {
-      return undefined;
-    }
-
-    const resolvedObject =
-      resolveReferenceInternal(fromFile, node.object, depth + 1, seen) ?? unwrapExpression(node.object);
+    const resolvedObject = resolveReferenceOrFallback(
+      fromFile,
+      node.object,
+      unwrapExpression(node.object),
+      depth + 1,
+      seen,
+    );
     const propertyName = propertyNameFromMemberExpression(node, (input) =>
       expressionToLiteralString(fromFile, input, resolveReferenceInternal, depth, seen),
     );
@@ -1674,11 +1653,10 @@ export function createQueryKeyResolver(filePath: string, index: SymbolIndex, wor
           (resolvedObject.arguments.length === 1 &&
             (t.isObjectExpression(wrappedArg) || t.isArrayExpression(wrappedArg))))
       ) {
-        const resolvedWrappedArg = resolveReferenceInternal(fromFile, wrappedArg, depth + 1, seen) ?? wrappedArg;
+        const resolvedWrappedArg = resolveReferenceOrFallback(fromFile, wrappedArg, wrappedArg, depth + 1, seen);
         if (t.isObjectExpression(resolvedWrappedArg)) {
           return resolveObjectPropertyValue(fromFile, resolvedWrappedArg, propertyName, depth + 1, seen);
         }
-
         if (t.isArrayExpression(resolvedWrappedArg)) {
           const indexValue = Number.parseInt(propertyName, 10);
           if (!Number.isFinite(indexValue) || indexValue < 0 || indexValue >= resolvedWrappedArg.elements.length) {
@@ -1715,12 +1693,16 @@ export function createQueryKeyResolver(filePath: string, index: SymbolIndex, wor
               (nestedCallResult.arguments.length === 1 &&
                 (t.isObjectExpression(nestedWrappedArg) || t.isArrayExpression(nestedWrappedArg))))
           ) {
-            const resolvedNestedWrappedArg =
-              resolveReferenceInternal(fromFile, nestedWrappedArg, depth + 1, seen) ?? nestedWrappedArg;
+            const resolvedNestedWrappedArg = resolveReferenceOrFallback(
+              fromFile,
+              nestedWrappedArg,
+              nestedWrappedArg,
+              depth + 1,
+              seen,
+            );
             if (t.isObjectExpression(resolvedNestedWrappedArg)) {
               return resolveObjectPropertyValue(fromFile, resolvedNestedWrappedArg, propertyName, depth + 1, seen);
             }
-
             if (t.isArrayExpression(resolvedNestedWrappedArg)) {
               const indexValue = Number.parseInt(propertyName, 10);
               if (
@@ -1730,12 +1712,10 @@ export function createQueryKeyResolver(filePath: string, index: SymbolIndex, wor
               ) {
                 return undefined;
               }
-
               const element = resolvedNestedWrappedArg.elements[indexValue];
               if (!element || !t.isExpression(element)) {
                 return undefined;
               }
-
               return markExpressionOrigin(unwrapExpression(element), fromFile);
             }
           }
@@ -1780,11 +1760,10 @@ export function createQueryKeyResolver(filePath: string, index: SymbolIndex, wor
       if (!localValue) {
         return resolveWorkspaceFunctionReturnByName(fromFile, callee.name);
       }
-
-      if (t.isFunctionExpression(localValue) || t.isArrowFunctionExpression(localValue)) {
-        return extractFunctionReturnExpression(localValue);
+      const localValueReturn = extractReturnFromFunctionLike(localValue);
+      if (localValueReturn) {
+        return localValueReturn;
       }
-
       return localValue;
     }
 
@@ -1801,10 +1780,10 @@ export function createQueryKeyResolver(filePath: string, index: SymbolIndex, wor
         seen,
       );
       if (namespaceFunction) {
-        if (t.isFunctionExpression(namespaceFunction) || t.isArrowFunctionExpression(namespaceFunction)) {
-          return extractFunctionReturnExpression(namespaceFunction);
+        const namespaceReturn = extractReturnFromFunctionLike(namespaceFunction);
+        if (namespaceReturn) {
+          return namespaceReturn;
         }
-
         if (t.isIdentifier(namespaceFunction)) {
           return resolveLocalFunctionReturn(fromFile, namespaceFunction.name, depth + 1, seen);
         }
@@ -1812,25 +1791,16 @@ export function createQueryKeyResolver(filePath: string, index: SymbolIndex, wor
         return namespaceFunction;
       }
     }
-
-    const calleeExpression = t.isExpression(callee) ? callee : undefined;
-    if (!calleeExpression) {
-      return undefined;
-    }
-
-    const resolvedReference = resolveReferenceInternal(fromFile, calleeExpression, depth + 1, seen);
+    const resolvedReference = resolveReferenceInternal(fromFile, callee as t.Expression, depth + 1, seen);
     if (!resolvedReference) {
       return undefined;
     }
-
-    if (t.isFunctionExpression(resolvedReference) || t.isArrowFunctionExpression(resolvedReference)) {
+    if (isFunctionExpressionLike(resolvedReference)) {
       return extractFunctionReturnExpression(resolvedReference);
     }
-
     if (t.isIdentifier(resolvedReference)) {
       return resolveLocalFunctionReturn(fromFile, resolvedReference.name, depth + 1, seen);
     }
-
     return resolvedReference;
   };
 

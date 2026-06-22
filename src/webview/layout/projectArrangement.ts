@@ -25,7 +25,6 @@ export function isMonorepoGraph(graph: WebviewPayload['graph']): boolean {
       continue;
     }
 
-    // Monorepo-like package scopes typically include nested package paths such as apps/mobile or packages/core.
     if (!parsed.project.includes('/')) {
       continue;
     }
