@@ -535,6 +535,41 @@ describe('webview/utils/fileActionGroups', () => {
     }
   });
 
+  it('keeps nodes when the layout is missing an entry for a graph node', () => {
+    const graph = createGraph({
+      nodes: [
+        createGraphNode({
+          id: 'file',
+          kind: 'file',
+          label: 'src/file.ts',
+          resolution: 'static',
+          metrics: { affectedKeys: 1, projectScope: 'same:alpha' },
+        }),
+        createGraphNode({
+          id: 'query',
+          kind: 'queryKey',
+          label: 'todo',
+          resolution: 'static',
+          metrics: { affectedFiles: 2, projectScope: 'same:alpha' },
+        }),
+      ],
+      edges: [],
+    });
+    const layoutNodes = [
+      {
+        id: 'file',
+        type: 'rqvNode',
+        data: {},
+        position: { x: 0, y: 0 },
+        measured: { width: 340, height: 100 },
+      },
+    ];
+
+    const result = alignFileActionGroups(layoutNodes, graph, 20);
+    expect(result).toHaveLength(1);
+    expect(result[0]?.id).toBe('file');
+  });
+
   it('allows project labels to be absent when the helper returns nothing', () => {
     const graph = createGraph({
       nodes: [

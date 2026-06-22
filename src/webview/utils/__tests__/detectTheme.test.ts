@@ -204,6 +204,14 @@ describe('webview/utils/detectTheme', () => {
     expect(detectDarkMode(false)).toBe(false);
   });
 
+  it('treats blank alpha tokens as opaque in rgba and slash syntax', () => {
+    document.documentElement.style.setProperty('--vscode-editor-background', 'rgba(0, 0, 0, )');
+    expect(detectDarkMode(false)).toBe(true);
+
+    document.documentElement.style.setProperty('--vscode-editor-background', 'rgb(255 255 255 / )');
+    expect(detectDarkMode(false)).toBe(false);
+  });
+
   it('returns undefined from hue channel parser when hue is empty (comma-separated hsl with blank first token)', () => {
     // 'hsl(, 100%, 50%)' - comma syntax where hue token is an empty string after split/trim
     // This exercises the !text early-return branch inside parseHueChannel.
