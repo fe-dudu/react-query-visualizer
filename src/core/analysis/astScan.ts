@@ -30,14 +30,7 @@ function addRecord(records: QueryRecord[], input: QueryRecord): void {
   records.push(input);
 }
 
-const MAX_JSX_PROP_RESOLVE_DEPTH = 16;
-const QUERY_KEYS_TO_INVALIDATE_PROP = 'queryKeysToInvalidate';
 const MAX_LOCAL_ACTION_ARG_RESOLVE_DEPTH = 12;
-
-interface QueryKeyExpressionCandidate {
-  expression: t.Expression;
-  locNode: t.Node;
-}
 
 function functionBindingName(
   functionPath: NodePath<t.FunctionDeclaration | t.FunctionExpression | t.ArrowFunctionExpression>,
@@ -235,194 +228,12 @@ function resolveNamedGetQueriesDataQueryKeyFromBinding(
   return getQueriesDataQueryKeyExpression(init, resolver, 0);
 }
 
-function resolveJsxPropExpression(
-  expression: t.Expression,
-  resolver: QueryKeyResolver | undefined,
-  depth = 0,
-): t.Expression {
-  if (depth >= MAX_JSX_PROP_RESOLVE_DEPTH) {
-    return unwrapExpression(expression);
-  }
-
-  const unwrapped = unwrapExpression(expression);
-
-  if (t.isIdentifier(unwrapped) || t.isMemberExpression(unwrapped)) {
-    const resolved = resolver?.resolveReference(unwrapped);
-    if (resolved) {
-      return resolveJsxPropExpression(resolved, resolver, depth + 1);
-    }
-    return unwrapped;
-  }
-
-  if (t.isCallExpression(unwrapped)) {
-    if (t.isExpression(unwrapped.callee)) {
-      const resolvedCallee = resolver?.resolveReference(unwrapped.callee);
-      if (resolvedCallee) {
-        return resolveJsxPropExpression(resolvedCallee, resolver, depth + 1);
-      }
-    }
-
-    const resolvedCall = resolver?.resolveCallResult(unwrapped.callee);
-    if (resolvedCall) {
-      return resolveJsxPropExpression(resolvedCall, resolver, depth + 1);
-    }
-  }
-
-  return unwrapped;
-}
-
 function isUnresolvedNormalizedKey(key: QueryRecord['queryKey']): boolean {
   if (key.segments.length === 1 && key.segments[0] === 'UNRESOLVED') {
     return true;
   }
 
   return key.id === 'unresolved_query_key';
-}
-
-function looksLikeArrayQueryKeyItem(
-  expression: t.Expression,
-  resolver: QueryKeyResolver | undefined,
-  depth: number,
-): boolean {
-  if (depth >= MAX_JSX_PROP_RESOLVE_DEPTH) {
-    return false;
-  }
-
-  const resolved = resolveJsxPropExpression(expression, resolver, depth + 1);
-  if (t.isArrayExpression(resolved)) {
-    return true;
-  }
-
-  const normalized = normalizeQueryKey(expression, { defaultMode: 'prefix' }, resolver);
-  if (isUnresolvedNormalizedKey(normalized) || normalized.source === 'wildcard') {
-    return false;
-  }
-
-  return normalized.display.startsWith('[') && normalized.display.endsWith(']');
-}
-
-function isLikelyQueryKeyCollection(
-  arrayNode: t.ArrayExpression,
-  resolver: QueryKeyResolver | undefined,
-  depth: number,
-): boolean {
-  if (depth >= MAX_JSX_PROP_RESOLVE_DEPTH) {
-    return false;
-  }
-
-  let comparableCount = 0;
-  let arrayLikeCount = 0;
-
-  for (const element of arrayNode.elements) {
-    if (!element || t.isSpreadElement(element) || !t.isExpression(element)) {
-      continue;
-    }
-
-    comparableCount += 1;
-    if (looksLikeArrayQueryKeyItem(element, resolver, depth + 1)) {
-      arrayLikeCount += 1;
-    }
-  }
-
-  if (comparableCount === 0) {
-    return true;
-  }
-
-  return arrayLikeCount > 0;
-}
-
-function collectQueryKeyExpressionsFromProp(
-  expression: t.Expression,
-  resolver: QueryKeyResolver | undefined,
-  depth = 0,
-): QueryKeyExpressionCandidate[] {
-  if (depth >= MAX_JSX_PROP_RESOLVE_DEPTH) {
-    return [{ expression, locNode: expression }];
-  }
-
-  if (t.isConditionalExpression(expression)) {
-    return [
-      ...collectQueryKeyExpressionsFromProp(expression.consequent, resolver, depth + 1),
-      ...collectQueryKeyExpressionsFromProp(expression.alternate, resolver, depth + 1),
-    ];
-  }
-
-  if (t.isLogicalExpression(expression)) {
-    if (expression.operator === '&&') {
-      return collectQueryKeyExpressionsFromProp(expression.right, resolver, depth + 1);
-    }
-
-    return [
-      ...collectQueryKeyExpressionsFromProp(expression.left, resolver, depth + 1),
-      ...collectQueryKeyExpressionsFromProp(expression.right, resolver, depth + 1),
-    ];
-  }
-
-  const resolvedCollection = resolveJsxPropExpression(expression, resolver, depth + 1);
-  if (
-    !t.isArrayExpression(resolvedCollection) ||
-    !isLikelyQueryKeyCollection(resolvedCollection, resolver, depth + 1)
-  ) {
-    return [{ expression, locNode: expression }];
-  }
-
-  const collected: QueryKeyExpressionCandidate[] = [];
-  const useOriginalLocForElements = resolvedCollection !== expression;
-
-  for (const element of resolvedCollection.elements) {
-    if (!element) {
-      continue;
-    }
-
-    if (t.isSpreadElement(element)) {
-      if (!t.isExpression(element.argument)) {
-        continue;
-      }
-
-      const spreadResolved = resolveJsxPropExpression(element.argument, resolver, depth + 1);
-      if (t.isArrayExpression(spreadResolved) && isLikelyQueryKeyCollection(spreadResolved, resolver, depth + 1)) {
-        const nested = collectQueryKeyExpressionsFromProp(spreadResolved, resolver, depth + 1);
-        const locNode = useOriginalLocForElements ? expression : element.argument;
-        collected.push(
-          ...nested.map((candidate) => ({
-            expression: candidate.expression,
-            locNode,
-          })),
-        );
-        continue;
-      }
-
-      collected.push({
-        expression: element.argument,
-        locNode: useOriginalLocForElements ? expression : element.argument,
-      });
-      continue;
-    }
-
-    if (!t.isExpression(element)) {
-      continue;
-    }
-
-    const itemResolved = resolveJsxPropExpression(element, resolver, depth + 1);
-    if (t.isArrayExpression(itemResolved) && isLikelyQueryKeyCollection(itemResolved, resolver, depth + 1)) {
-      const nested = collectQueryKeyExpressionsFromProp(itemResolved, resolver, depth + 1);
-      const locNode = useOriginalLocForElements ? expression : element;
-      collected.push(
-        ...nested.map((candidate) => ({
-          expression: candidate.expression,
-          locNode,
-        })),
-      );
-      continue;
-    }
-
-    collected.push({
-      expression: element,
-      locNode: useOriginalLocForElements ? expression : element,
-    });
-  }
-
-  return collected;
 }
 
 function shouldSkipPassThroughUnresolvedAction(
@@ -454,7 +265,6 @@ function shouldSkipPassThroughUnresolvedAction(
   const value = unwrapExpression(queryKeyValue);
   if (t.isIdentifier(value)) {
     const binding = callPath.scope.getBinding(value.name);
-    // Keep pass-through parameters (`fn(queryKey: QueryKey)`) as action records.
     if (binding?.kind === 'param') {
       return false;
     }
@@ -1521,15 +1331,6 @@ function resolveActionArgsWithLocalBindings(
   }
 
   return [resolvedFirst, ...args.slice(1)] as t.CallExpression['arguments'];
-}
-
-function isIgnorablePropQueryKey(key: QueryRecord['queryKey']): boolean {
-  if (key.segments.length !== 1) {
-    return false;
-  }
-
-  const segment = key.segments[0];
-  return segment === 'undefined' || segment === '$undefined' || segment === 'null' || segment === '$null';
 }
 
 export function scanImports(ast: t.File, context: ParseContext): void {
@@ -2681,7 +2482,6 @@ export function scanCalls(
     }
 
     if (t.isArrayExpression(resolved)) {
-      // queryOptions()/infiniteQueryOptions() can resolve directly to queryKey arrays.
       return [resolved];
     }
 
@@ -3211,58 +3011,6 @@ export function scanCalls(
       const { node } = optionalCallPath;
       const loc = locationFromCallNode(node);
       handleMemberClientCall(optionalCallPath, node.callee, node.arguments, loc);
-    },
-
-    JSXOpeningElement(jsxPath: NodePath<t.JSXOpeningElement>) {
-      const prop = jsxPath.node.attributes.find((attribute) => {
-        return (
-          t.isJSXAttribute(attribute) &&
-          t.isJSXIdentifier(attribute.name) &&
-          attribute.name.name === QUERY_KEYS_TO_INVALIDATE_PROP
-        );
-      });
-      if (!prop || !t.isJSXAttribute(prop)) {
-        return;
-      }
-
-      const value = prop.value;
-      if (!value || !t.isJSXExpressionContainer(value) || t.isJSXEmptyExpression(value.expression)) {
-        return;
-      }
-
-      const queryKeyExpressions = collectQueryKeyExpressionsFromProp(value.expression, resolver);
-      if (queryKeyExpressions.length === 0) {
-        return;
-      }
-
-      const emitted = new Set<string>();
-
-      for (const queryKeyExpression of queryKeyExpressions) {
-        const itemLoc = locationFromNode(queryKeyExpression.locNode);
-        const queryKey = normalizeQueryKey(queryKeyExpression.expression, { defaultMode: 'prefix' }, resolver);
-        if (
-          queryKey.source === 'wildcard' ||
-          isUnresolvedNormalizedKey(queryKey) ||
-          isIgnorablePropQueryKey(queryKey)
-        ) {
-          continue;
-        }
-
-        const dedupeKey = `${queryKey.id}:${queryKey.display}:${itemLoc.line}:${itemLoc.column}`;
-        if (emitted.has(dedupeKey)) {
-          continue;
-        }
-        emitted.add(dedupeKey);
-
-        addRecord(records, {
-          relation: 'invalidates',
-          operation: 'invalidateQueries',
-          file: filePath,
-          loc: itemLoc,
-          queryKey,
-          resolution: 'dynamic',
-        });
-      }
     },
   });
 }

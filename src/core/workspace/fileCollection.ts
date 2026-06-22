@@ -106,6 +106,9 @@ export async function collectFiles(rootPath: string, scope: ScanScope): Promise<
       });
 
       for (const file of matches) {
+        if (file.endsWith('.d.ts')) {
+          continue;
+        }
         fileSet.add(path.resolve(file));
       }
     }),
