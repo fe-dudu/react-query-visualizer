@@ -94,6 +94,7 @@ function resolveWithResolver(
     if (t.isExpression(node.callee)) {
       return resolver.resolveReference(node.callee);
     }
+    return undefined;
   }
 
   if (t.isIdentifier(node) || t.isMemberExpression(node)) {
@@ -167,15 +168,19 @@ function memoLikeCallReturnExpression(node: t.CallExpression): t.Expression | un
     return undefined;
   }
 
-  if (t.isFunctionExpression(firstArg) || t.isArrowFunctionExpression(firstArg)) {
+  if (isFunctionExpressionLike(firstArg)) {
     return extractFunctionReturnExpression(firstArg);
   }
 
   return firstArg;
 }
 
+function isFunctionExpressionLike(node: unknown): node is t.FunctionExpression | t.ArrowFunctionExpression {
+  return t.isFunctionExpression(node) || t.isArrowFunctionExpression(node);
+}
+
 function unwrapFunctionReturnExpression(expression: t.Expression): t.Expression | undefined {
-  if (t.isFunctionExpression(expression) || t.isArrowFunctionExpression(expression)) {
+  if (isFunctionExpressionLike(expression)) {
     return extractFunctionReturnExpression(expression);
   }
 
@@ -243,8 +248,7 @@ function segmentFromObjectExpression(
         continue;
       }
 
-      const spreadSource =
-        resolveQueryKeyExpression(property.argument, resolver, depth + 1) ?? unwrapExpression(property.argument);
+      const spreadSource = resolveOrUnwrapped(property.argument, resolver, depth + 1);
       if (t.isObjectExpression(spreadSource)) {
         const spreadSegment = segmentFromObjectExpression(spreadSource, resolver, depth + 1);
         const spreadText = spreadSegment.text.trim();
@@ -339,7 +343,6 @@ function isEmptyFallbackExpression(node: t.Expression): boolean {
   if (t.isArrayExpression(unwrapped)) {
     return unwrapped.elements.length === 0;
   }
-
   if (t.isNullLiteral(unwrapped)) {
     return true;
   }
@@ -374,12 +377,10 @@ function callArgumentsSegment(
       segments.push({ text: `...${spread.text}`, isStatic: spread.isStatic });
       continue;
     }
-
     if (t.isExpression(arg)) {
       segments.push(normalizeSegmentResult(segmentFromExpression(arg, resolver, depth + 1)));
       continue;
     }
-
     segments.push({ text: UNRESOLVED_SEGMENT, isStatic: false });
   }
 
@@ -401,9 +402,43 @@ function simplifyCollectionMethodCallSegment(
     return undefined;
   }
 
-  // Keep query-key display concise for value-transform chains like dids.slice().sort() or interests?.join(',')
-  // by surfacing the originating variable expression instead of call(...) text.
   return objectSegment;
+}
+
+function isStaticMemberCallSegment(
+  objectSegment: SegmentResult,
+  propertySegment: { value: string; isStatic: boolean } | undefined,
+  argsSegment: SegmentResult,
+): boolean {
+  return objectSegment.isStatic && propertySegment?.isStatic === true && argsSegment.isStatic;
+}
+
+function propertySegmentText(propertySegment: { value: string; isStatic: boolean } | undefined): string {
+  return propertySegment?.value ?? '?';
+}
+
+function queryKeyId(rawSegments: string[]): string {
+  return rawSegments.join('|') || 'empty';
+}
+
+function queryKeySource(resolution: NormalizedQueryKey['resolution']): NormalizedQueryKey['source'] {
+  return resolution === 'static' ? 'literal' : 'expression';
+}
+
+function defaultMatchMode(options: { defaultMode?: MatchMode }, fallback: MatchMode): MatchMode {
+  return options.defaultMode ?? fallback;
+}
+
+function actionModeFromExact(exact: boolean | undefined): MatchMode {
+  return exact === true ? 'exact' : 'prefix';
+}
+
+function predicateMatchMode(exact: boolean | undefined, inferredMode: MatchMode): MatchMode {
+  return exact === true ? 'exact' : inferredMode;
+}
+
+function missingActionMode(hasPredicate: boolean): MatchMode {
+  return hasPredicate ? 'predicate' : 'all';
 }
 
 function substituteIdentifierInExpression(
@@ -432,7 +467,6 @@ function substituteIdentifierInExpression(
           }
           return t.spreadElement(replaceExpression(element.argument));
         }
-
         return t.isExpression(element) ? replaceExpression(element) : t.cloneNode(element, true);
       });
       return cloned;
@@ -447,7 +481,6 @@ function substituteIdentifierInExpression(
           }
           return t.spreadElement(replaceExpression(property.argument));
         }
-
         if (t.isObjectProperty(property) && t.isExpression(property.value)) {
           const nextValue = replaceExpression(property.value);
           const next = t.objectProperty(
@@ -461,7 +494,6 @@ function substituteIdentifierInExpression(
           );
           return next;
         }
-
         return t.cloneNode(property, true);
       });
       return cloned;
@@ -611,24 +643,20 @@ function resolveObjectPropertyExpression(
     if (!property) {
       continue;
     }
-
     if (t.isObjectProperty(property)) {
       const keyName = propertyNameFromExpression(property.key, resolver, depth + 1);
-      if (keyName === propertyName && t.isExpression(property.value)) {
+      if (keyName === propertyName) {
         return unwrapExpression(property.value);
       }
       continue;
     }
-
     if (!t.isSpreadElement(property) || !t.isExpression(property.argument)) {
       continue;
     }
-
     const spreadSource = resolveActionOptionsObject(property.argument, resolver, depth + 1);
     if (!t.isObjectExpression(spreadSource)) {
       continue;
     }
-
     const nested = resolveObjectPropertyExpression(spreadSource, propertyName, resolver, depth + 1);
     if (nested) {
       return nested;
@@ -655,14 +683,13 @@ function collectObjectArgumentSubstitutions(
 
     if (t.isObjectProperty(property)) {
       const key = propertyNameFromExpression(property.key, resolver, depth + 1);
-      if (!key || !t.isExpression(property.value)) {
+      if (!key) {
         continue;
       }
 
       target.set(key, unwrapExpression(property.value));
       continue;
     }
-
     if (!t.isSpreadElement(property) || !t.isExpression(property.argument)) {
       continue;
     }
@@ -747,7 +774,7 @@ function applyFunctionArgumentHints(
     }
 
     const paramName = paramNames[index];
-    const replacement = resolveQueryKeyExpression(arg, resolver, depth + 1) ?? unwrapExpression(arg);
+    const replacement = resolveOrUnwrapped(arg, resolver, depth + 1);
     if (!expressionContainsIdentifier(nextExpression, paramName)) {
       continue;
     }
@@ -797,20 +824,15 @@ function applyPositionalArgumentHints(
       return element ? t.cloneNode(element, true) : null;
     }
 
-    const placeholderName = placeholderNames[index];
-    const resolvedElement = resolveQueryKeyExpression(element, resolver, depth + 1) ?? unwrapExpression(element);
+    const resolvedElement = resolveOrUnwrapped(element, resolver, depth + 1);
     if (segmentFromExpression(resolvedElement, resolver, depth + 1).isStatic) {
-      return element ? t.cloneNode(element, true) : null;
+      return t.cloneNode(element, true);
     }
-
-    const replacement = resolveQueryKeyExpression(arg, resolver, depth + 1) ?? unwrapExpression(arg);
-    if (placeholderName) {
-      changed = true;
-    }
+    const replacement = resolveOrUnwrapped(arg, resolver, depth + 1);
+    changed = true;
 
     return t.cloneNode(replacement, true);
   });
-
   return changed ? nextExpression : resolvedCall;
 }
 
@@ -832,10 +854,9 @@ function applyCallArgumentHints(
     calleeName &&
     /^query.?keys?$/i.test(calleeName)
   ) {
-    return resolveQueryKeyExpression(firstArg, resolver, depth + 1) ?? firstArg;
+    return resolveOrFallback(firstArg, firstArg, resolver, depth + 1);
   }
-
-  const resolvedFirstArg = resolveQueryKeyExpression(firstArg, resolver, depth + 1) ?? firstArg;
+  const resolvedFirstArg = resolveOrFallback(firstArg, firstArg, resolver, depth + 1);
   if (t.isObjectExpression(resolvedFirstArg)) {
     const hintedByObjectArg = applyObjectArgumentIdentifierHints(resolvedCall, resolvedFirstArg, resolver, depth + 1);
     if (hintedByObjectArg !== resolvedCall) {
@@ -905,21 +926,21 @@ export function resolveQueryKeyExpression(
   if (t.isIdentifier(unwrapped)) {
     const resolvedReference = resolver?.resolveReference(unwrapped);
     if (resolvedReference) {
-      return resolveQueryKeyExpression(resolvedReference, resolver, depth + 1) ?? resolvedReference;
+      return resolveOrFallback(resolvedReference, resolvedReference, resolver, depth + 1);
     }
   }
 
   if (t.isObjectExpression(unwrapped)) {
     const queryKey = findObjectPropertyValue(unwrapped, 'queryKey', resolver);
     if (queryKey) {
-      return resolveQueryKeyExpression(queryKey, resolver, depth + 1) ?? queryKey;
+      return resolveOrFallback(queryKey, queryKey, resolver, depth + 1);
     }
     return unwrapped;
   }
 
   if (t.isCallExpression(unwrapped)) {
     if (callCalleeName(unwrapped.callee) === 'createQueryKey') {
-      const resolvedCall = t.isExpression(unwrapped.callee) ? resolver?.resolveCallResult(unwrapped.callee) : undefined;
+      const resolvedCall = resolver?.resolveCallResult(unwrapped.callee);
       if (resolvedCall && t.isArrayExpression(resolvedCall)) {
         const materialized = t.cloneNode(resolvedCall, false);
         materialized.elements = resolvedCall.elements.map((element, index) => {
@@ -927,8 +948,7 @@ export function resolveQueryKeyExpression(
           if (!arg || t.isSpreadElement(arg) || !t.isExpression(arg)) {
             return element ? t.cloneNode(element, true) : null;
           }
-
-          const resolvedArg = resolveQueryKeyExpression(arg, resolver, depth + 1) ?? unwrapExpression(arg);
+          const resolvedArg = resolveOrUnwrapped(arg, resolver, depth + 1);
           return t.cloneNode(resolvedArg, true);
         });
 
@@ -939,32 +959,25 @@ export function resolveQueryKeyExpression(
     const firstArg = firstExpressionArgument(unwrapped.arguments);
     const resolvedFirstArg =
       firstArg && unwrapped.arguments.length === 1
-        ? (resolveQueryKeyExpression(firstArg, resolver, depth + 1) ?? firstArg)
+        ? resolveOrFallback(firstArg, firstArg, resolver, depth + 1)
         : undefined;
 
     if (firstArg && unwrapped.arguments.length === 1) {
       if (resolvedFirstArg && t.isObjectExpression(resolvedFirstArg)) {
         const queryKey = findObjectPropertyValue(resolvedFirstArg, 'queryKey', resolver);
         if (queryKey) {
-          return resolveQueryKeyExpression(queryKey, resolver, depth + 1) ?? queryKey;
+          return resolveOrFallback(queryKey, queryKey, resolver, depth + 1);
         }
       }
 
       if (isIdentityWrapperCall(unwrapped.callee)) {
-        return (
-          resolveQueryKeyExpression(resolvedFirstArg ?? firstArg, resolver, depth + 1) ?? resolvedFirstArg ?? firstArg
-        );
+        return resolveOrFallback(resolvedFirstArg ?? firstArg, firstArg, resolver, depth + 1);
       }
     }
-
-    const resolvedReference = t.isExpression(unwrapped.callee)
-      ? resolver?.resolveReference(unwrapped.callee)
-      : undefined;
+    const resolvedReference = resolver?.resolveReference(unwrapped.callee);
     if (
       resolvedReference &&
-      (t.isFunctionExpression(resolvedReference) ||
-        t.isArrowFunctionExpression(resolvedReference) ||
-        t.isFunctionDeclaration(resolvedReference))
+      (isFunctionExpressionLike(resolvedReference) || t.isFunctionDeclaration(resolvedReference))
     ) {
       const resolvedReturn = extractFunctionReturnExpression(resolvedReference);
       if (resolvedReturn) {
@@ -975,7 +988,7 @@ export function resolveQueryKeyExpression(
           resolver,
           depth + 1,
         );
-        return resolveQueryKeyExpression(hintedReturn, resolver, depth + 1) ?? hintedReturn;
+        return resolveOrFallback(hintedReturn, hintedReturn, resolver, depth + 1);
       }
     }
 
@@ -983,11 +996,11 @@ export function resolveQueryKeyExpression(
     if (resolvedCall) {
       const positionalHintedCall = applyPositionalArgumentHints(unwrapped, resolvedCall, resolver, depth + 1);
       if (positionalHintedCall !== resolvedCall) {
-        return resolveQueryKeyExpression(positionalHintedCall, resolver, depth + 1) ?? positionalHintedCall;
+        return resolveOrFallback(positionalHintedCall, positionalHintedCall, resolver, depth + 1);
       }
 
       const hintedCall = applyCallArgumentHints(unwrapped, resolvedCall, resolver, depth + 1);
-      return resolveQueryKeyExpression(hintedCall, resolver, depth + 1) ?? hintedCall;
+      return resolveOrFallback(hintedCall, hintedCall, resolver, depth + 1);
     }
 
     if (resolvedFirstArg && (t.isObjectExpression(resolvedFirstArg) || t.isArrayExpression(resolvedFirstArg))) {
@@ -1000,7 +1013,7 @@ export function resolveQueryKeyExpression(
   if (t.isIdentifier(unwrapped) || t.isMemberExpression(unwrapped)) {
     const resolved = resolver?.resolveReference(unwrapped);
     if (resolved) {
-      return resolveQueryKeyExpression(resolved, resolver, depth + 1) ?? resolved;
+      return resolveOrFallback(resolved, resolved, resolver, depth + 1);
     }
   }
 
@@ -1009,15 +1022,14 @@ export function resolveQueryKeyExpression(
     if (!propertyName) {
       const resolvedReference = resolver?.resolveReference(unwrapped);
       if (resolvedReference) {
-        return resolveQueryKeyExpression(resolvedReference, resolver, depth + 1) ?? resolvedReference;
+        return resolveOrFallback(resolvedReference, resolvedReference, resolver, depth + 1);
       }
       return unwrapped;
     }
-
     if (t.isObjectExpression(unwrapped.object)) {
       const resolved = resolveObjectPropertyExpression(unwrapped.object, propertyName, resolver, depth + 1);
       if (resolved) {
-        return resolveQueryKeyExpression(resolved, resolver, depth + 1) ?? resolved;
+        return resolveOrFallback(resolved, resolved, resolver, depth + 1);
       }
     }
 
@@ -1029,13 +1041,13 @@ export function resolveQueryKeyExpression(
     if (resolvedObject && t.isObjectExpression(resolvedObject)) {
       const resolved = resolveObjectPropertyExpression(resolvedObject, propertyName, resolver, depth + 1);
       if (resolved) {
-        return resolveQueryKeyExpression(resolved, resolver, depth + 1) ?? resolved;
+        return resolveOrFallback(resolved, resolved, resolver, depth + 1);
       }
     }
 
     const resolvedReference = resolver?.resolveReference(unwrapped);
     if (resolvedReference) {
-      return resolveQueryKeyExpression(resolvedReference, resolver, depth + 1) ?? resolvedReference;
+      return resolveOrFallback(resolvedReference, resolvedReference, resolver, depth + 1);
     }
   }
 
@@ -1054,7 +1066,7 @@ function normalizedUnknownKey(defaultMode: MatchMode): NormalizedQueryKey {
 }
 
 function normalizeSegmentResult(segment: SegmentResult): SegmentResult {
-  const text = segment.text || UNRESOLVED_SEGMENT;
+  const text = segmentTextOrUnresolved(segment);
   if (text === '...spread' || text === 'expr' || text === 'call(expr)') {
     return { text: UNRESOLVED_SEGMENT, isStatic: false };
   }
@@ -1069,11 +1081,39 @@ function normalizeSegmentResult(segment: SegmentResult): SegmentResult {
   };
 }
 
+function segmentTextOrUnresolved(segment: SegmentResult): string {
+  return segment.text || UNRESOLVED_SEGMENT;
+}
+
+function isDisplayableResolvedSegment(segment: SegmentResult): boolean {
+  return segment.text !== 'expr';
+}
+
+function valueOrFallback<T>(value: T | undefined, fallback: T): T {
+  return value === undefined ? fallback : value;
+}
+
+function resolveOrFallback(
+  node: t.Expression,
+  fallback: t.Expression,
+  resolver: QueryKeyResolver | undefined,
+  depth: number,
+): t.Expression {
+  return valueOrFallback(resolveQueryKeyExpression(node, resolver, depth), fallback);
+}
+
+function resolveOrUnwrapped(node: t.Expression, resolver: QueryKeyResolver | undefined, depth: number): t.Expression {
+  return resolveOrFallback(node, unwrapExpression(node), resolver, depth);
+}
+
+function isDifferentExpression(left: t.Expression | undefined, right: t.Expression): left is t.Expression {
+  return left !== undefined && left !== right;
+}
+
 function shouldTreatAsWildcardActionKey(key: NormalizedQueryKey): boolean {
   if (key.id === 'empty' && key.segments.length === 0) {
     return true;
   }
-
   if (key.id === UNRESOLVED_QUERY_KEY.toLowerCase()) {
     return true;
   }
@@ -1112,7 +1152,6 @@ function isQueryCacheLookupCall(node: t.Expression, resolver: QueryKeyResolver |
   if (!t.isMemberExpression(callee) || callee.computed || !t.isIdentifier(callee.property)) {
     return false;
   }
-
   if (!['get', 'find'].includes(callee.property.name)) {
     return false;
   }
@@ -1120,11 +1159,6 @@ function isQueryCacheLookupCall(node: t.Expression, resolver: QueryKeyResolver |
   if (t.isIdentifier(callee.object) && callee.object.name.toLowerCase().includes('querycache')) {
     return true;
   }
-
-  if (!t.isExpression(callee.object)) {
-    return false;
-  }
-
   const objectSegment = segmentFromExpression(callee.object, resolver, depth + 1).text.toLowerCase();
   return objectSegment.includes('querycache') || objectSegment.includes('getquerycache');
 }
@@ -1166,7 +1200,7 @@ function normalizeActionKeyOrWildcard(
   resolver?: QueryKeyResolver,
 ): NormalizedQueryKey {
   const normalized = normalizeQueryKey(node, options, resolver);
-  const mode = options.defaultMode ?? normalized.matchMode;
+  const mode = defaultMatchMode(options, normalized.matchMode);
   const unresolvedQueryKeyReference =
     isPassThroughQueryKeyReference(node) &&
     normalized.source === 'expression' &&
@@ -1180,7 +1214,6 @@ function normalizeActionKeyOrWildcard(
     if (isPassThroughQueryKeyReference(node)) {
       return buildPassThroughActionKey(mode);
     }
-
     if (isPassThroughQueryInstanceReference(node, resolver)) {
       return buildPassThroughActionKey(mode);
     }
@@ -1203,13 +1236,11 @@ function segmentsFromArrayElement(
   if (!t.isSpreadElement(segment)) {
     return [normalizeSegmentResult(segmentFromExpression(segment, resolver, depth + 1))];
   }
-
   if (!t.isExpression(segment.argument)) {
     return [{ text: UNRESOLVED_SEGMENT, isStatic: false }];
   }
 
-  const spreadSource =
-    resolveQueryKeyExpression(segment.argument, resolver, depth + 1) ?? unwrapExpression(segment.argument);
+  const spreadSource = resolveOrUnwrapped(segment.argument, resolver, depth + 1);
   if (t.isArrayExpression(spreadSource)) {
     const expanded = spreadSource.elements.flatMap((element) => segmentsFromArrayElement(element, resolver, depth + 1));
     if (expanded.length > 0) {
@@ -1277,11 +1308,9 @@ export function segmentFromExpression(
         if (isMemoLikeCall(resolvedValue)) {
           return { text: `$${unwrapped.name}`, isStatic: false };
         }
-
         if (t.isMemberExpression(resolvedValue.callee) || t.isOptionalMemberExpression(resolvedValue.callee)) {
           return { text: `$${unwrapped.name}`, isStatic: false };
         }
-
         return segmentFromExpression(resolvedValue, resolver, depth + 1);
       }
 
@@ -1333,7 +1362,6 @@ export function segmentFromExpression(
       if (!expr) {
         continue;
       }
-
       const segment = t.isExpression(expr)
         ? segmentFromExpression(expr, resolver, depth + 1)
         : { text: 'type', isStatic: false };
@@ -1352,8 +1380,7 @@ export function segmentFromExpression(
     if (!returned) {
       return { text: 'expr', isStatic: false };
     }
-
-    const resolvedReturn = resolveQueryKeyExpression(returned, resolver, depth + 1) ?? unwrapExpression(returned);
+    const resolvedReturn = resolveOrUnwrapped(returned, resolver, depth + 1);
     if (t.isArrayExpression(resolvedReturn)) {
       const first = resolvedReturn.elements[0];
       if (!first) {
@@ -1373,26 +1400,13 @@ export function segmentFromExpression(
 
   if (t.isOptionalMemberExpression(unwrapped)) {
     const propertyName = propertyNameFromExpression(unwrapped.property as t.Expression, resolver, depth + 1);
-    if (t.isExpression(unwrapped.object)) {
-      const resolvedObject =
-        resolveQueryKeyExpression(unwrapped.object, resolver, depth + 1) ?? unwrapExpression(unwrapped.object);
-      if (propertyName === 'queryKey' && t.isArrayExpression(resolvedObject)) {
-        return segmentFromExpression(resolvedObject, resolver, depth + 1);
-      }
-      if (t.isCallExpression(resolvedObject)) {
-        const calleeName = callCalleeName(resolvedObject.callee);
-        if (calleeName === 'ref' || calleeName === 'shallowRef') {
-          const firstArg = firstExpressionArgument(resolvedObject.arguments);
-          if (firstArg) {
-            return segmentFromExpression(firstArg, resolver, depth + 1);
-          }
-        }
-      }
+    const resolvedObject = resolveOrUnwrapped(unwrapped.object, resolver, depth + 1);
+    if (propertyName === 'queryKey' && t.isArrayExpression(resolvedObject)) {
+      return segmentFromExpression(resolvedObject, resolver, depth + 1);
     }
 
-    const object = segmentFromExpression(unwrapped.object as t.Expression, resolver, depth + 1);
+    const object = segmentFromExpression(unwrapped.object, resolver, depth + 1);
     const inferredProperty = inferPropertyName(unwrapped.property as t.Expression | t.PrivateName, resolver, depth + 1);
-
     if (!inferredProperty) {
       return { text: `${object.text}?.?`, isStatic: false };
     }
@@ -1430,24 +1444,9 @@ export function segmentFromExpression(
     }
 
     if (propertyName === 'queryKey' && t.isExpression(unwrapped.object)) {
-      const resolvedObject =
-        resolveQueryKeyExpression(unwrapped.object, resolver, depth + 1) ?? unwrapExpression(unwrapped.object);
+      const resolvedObject = resolveOrUnwrapped(unwrapped.object, resolver, depth + 1);
       if (t.isArrayExpression(resolvedObject)) {
         return segmentFromExpression(resolvedObject, resolver, depth + 1);
-      }
-    }
-
-    if (propertyName === 'value' && t.isExpression(unwrapped.object)) {
-      const resolvedObject =
-        resolveQueryKeyExpression(unwrapped.object, resolver, depth + 1) ?? unwrapExpression(unwrapped.object);
-      if (t.isCallExpression(resolvedObject)) {
-        const calleeName = callCalleeName(resolvedObject.callee);
-        if (calleeName === 'ref' || calleeName === 'shallowRef') {
-          const firstArg = firstExpressionArgument(resolvedObject.arguments);
-          if (firstArg) {
-            return segmentFromExpression(firstArg, resolver, depth + 1);
-          }
-        }
       }
     }
 
@@ -1468,9 +1467,7 @@ export function segmentFromExpression(
 
   if (t.isOptionalCallExpression(unwrapped)) {
     if (t.isOptionalMemberExpression(unwrapped.callee)) {
-      const objectSegment = t.isExpression(unwrapped.callee.object)
-        ? segmentFromExpression(unwrapped.callee.object, resolver, depth + 1)
-        : { text: 'expr', isStatic: false };
+      const objectSegment = segmentFromExpression(unwrapped.callee.object, resolver, depth + 1);
       const propertySegment = inferPropertyName(unwrapped.callee.property, resolver, depth + 1);
       const simplified = simplifyCollectionMethodCallSegment(objectSegment, propertySegment);
       if (simplified) {
@@ -1478,40 +1475,35 @@ export function segmentFromExpression(
       }
 
       const argsSegment = callArgumentsSegment(unwrapped.arguments, resolver, depth + 1);
-      const propertyText = propertySegment?.value ?? '?';
+      const propertyText = propertySegmentText(propertySegment);
       const targetText = unwrapped.callee.computed
         ? `${objectSegment.text}?.[${propertyText}]`
         : `${objectSegment.text}?.${propertyText}`;
 
       return {
         text: `${targetText}(${argsSegment.text})`,
-        isStatic: objectSegment.isStatic && (propertySegment?.isStatic ?? false) && argsSegment.isStatic,
+        isStatic: isStaticMemberCallSegment(objectSegment, propertySegment, argsSegment),
       };
     }
 
     if (t.isIdentifier(unwrapped.callee)) {
       return { text: `call(${unwrapped.callee.name})`, isStatic: false };
     }
-
     if (t.isMemberExpression(unwrapped.callee)) {
-      const objectSegment = t.isExpression(unwrapped.callee.object)
-        ? segmentFromExpression(unwrapped.callee.object, resolver, depth + 1)
-        : { text: 'expr', isStatic: false };
+      const objectSegment = segmentFromExpression(unwrapped.callee.object, resolver, depth + 1);
       const propertySegment = inferPropertyName(unwrapped.callee.property, resolver, depth + 1);
       const simplified = simplifyCollectionMethodCallSegment(objectSegment, propertySegment);
       if (simplified) {
         return simplified;
       }
-
       const argsSegment = callArgumentsSegment(unwrapped.arguments, resolver, depth + 1);
-      const propertyText = propertySegment?.value ?? '?';
+      const propertyText = propertySegmentText(propertySegment);
       const targetText = unwrapped.callee.computed
         ? `${objectSegment.text}[${propertyText}]`
         : `${objectSegment.text}.${propertyText}`;
-
       return {
         text: `${targetText}(${argsSegment.text})`,
-        isStatic: objectSegment.isStatic && (propertySegment?.isStatic ?? false) && argsSegment.isStatic,
+        isStatic: isStaticMemberCallSegment(objectSegment, propertySegment, argsSegment),
       };
     }
 
@@ -1522,7 +1514,7 @@ export function segmentFromExpression(
     const calleeName = callCalleeName(unwrapped.callee);
     if (calleeName === 'createQueryKey' || calleeName === 'queryOptions' || calleeName === 'infiniteQueryOptions') {
       const resolvedKeyExpression = resolveQueryKeyExpression(unwrapped, resolver, depth + 1);
-      if (resolvedKeyExpression && resolvedKeyExpression !== unwrapped) {
+      if (isDifferentExpression(resolvedKeyExpression, unwrapped)) {
         return segmentFromExpression(resolvedKeyExpression, resolver, depth + 1);
       }
     }
@@ -1551,32 +1543,12 @@ export function segmentFromExpression(
     if (memoReturn) {
       return segmentFromExpression(memoReturn, resolver, depth + 1);
     }
-
-    if (t.isExpression(unwrapped.callee)) {
-      const resolvedCallee = resolver?.resolveReference(unwrapped.callee);
-      if (resolvedCallee) {
-        if (t.isFunctionExpression(resolvedCallee) || t.isArrowFunctionExpression(resolvedCallee)) {
-          const returned = extractFunctionReturnExpression(resolvedCallee);
-          if (returned) {
-            return segmentFromExpression(returned, resolver, depth + 1);
-          }
-        }
-
-        const resolvedValue = segmentFromExpression(resolvedCallee, resolver, depth + 1);
-        if (resolvedValue.text !== 'expr') {
-          return resolvedValue;
-        }
-      }
-    }
-
     if (t.isIdentifier(unwrapped.callee)) {
       return { text: `call(${unwrapped.callee.name})`, isStatic: false };
     }
 
     if (t.isMemberExpression(unwrapped.callee)) {
-      const objectSegment = t.isExpression(unwrapped.callee.object)
-        ? segmentFromExpression(unwrapped.callee.object, resolver, depth + 1)
-        : { text: 'expr', isStatic: false };
+      const objectSegment = segmentFromExpression(unwrapped.callee.object, resolver, depth + 1);
       const propertySegment = inferPropertyName(unwrapped.callee.property, resolver, depth + 1);
       const simplified = simplifyCollectionMethodCallSegment(objectSegment, propertySegment);
       if (simplified) {
@@ -1591,7 +1563,7 @@ export function segmentFromExpression(
 
       return {
         text: `${targetText}(${argsSegment.text})`,
-        isStatic: objectSegment.isStatic && (propertySegment?.isStatic ?? false) && argsSegment.isStatic,
+        isStatic: isStaticMemberCallSegment(objectSegment, propertySegment, argsSegment),
       };
     }
 
@@ -1669,22 +1641,18 @@ export function readBooleanProperty(objectNode: t.ObjectExpression, propName: st
     if (t.isIdentifier(value.key)) {
       return value.key.name === propName;
     }
-
     if (t.isStringLiteral(value.key)) {
       return value.key.value === propName;
     }
-
     return false;
   });
 
   if (!prop || !t.isObjectProperty(prop)) {
     return undefined;
   }
-
   if (t.isBooleanLiteral(prop.value)) {
     return prop.value.value;
   }
-
   return undefined;
 }
 
@@ -1708,7 +1676,6 @@ export function findObjectPropertyValue(
       if (t.isIdentifier(property.key) && property.key.name === propName && t.isExpression(property.value)) {
         return unwrapExpression(property.value);
       }
-
       if (t.isStringLiteral(property.key) && property.key.value === propName && t.isExpression(property.value)) {
         return unwrapExpression(property.value);
       }
@@ -1743,25 +1710,23 @@ export function normalizeQueryKey(
     if (options.wildcardIfMissing) {
       return buildAllQueryCacheKey('dynamic', 'ALL_QUERY_CACHE');
     }
-
     return normalizedUnknownKey(options.defaultMode ?? 'unknown');
   }
-
-  const resolved = resolveQueryKeyExpression(node, resolver) ?? unwrapExpression(node);
+  const resolved = resolveOrUnwrapped(node, resolver, 0);
 
   if (t.isArrayExpression(resolved)) {
     const segments = resolved.elements.flatMap((segment) => segmentsFromArrayElement(segment, resolver, 0));
 
     const resolution = segments.every((seg) => seg.isStatic) ? 'static' : 'dynamic';
-    const rawSegments = segments.map((seg) => seg.text || UNRESOLVED_SEGMENT);
+    const rawSegments = segments.map(segmentTextOrUnresolved);
 
     return {
-      id: rawSegments.join('|') || 'empty',
+      id: queryKeyId(rawSegments),
       display: `[${rawSegments.join(', ')}]`,
       segments: rawSegments,
-      matchMode: options.defaultMode ?? 'prefix',
+      matchMode: defaultMatchMode(options, 'prefix'),
       resolution,
-      source: resolution === 'static' ? 'literal' : 'expression',
+      source: queryKeySource(resolution),
     };
   }
 
@@ -1770,8 +1735,7 @@ export function normalizeQueryKey(
       if (!argument || !t.isExpression(argument)) {
         return { text: UNRESOLVED_SEGMENT, isStatic: false };
       }
-
-      const resolvedArgument = resolveQueryKeyExpression(argument, resolver, 0) ?? unwrapExpression(argument);
+      const resolvedArgument = resolveOrUnwrapped(argument, resolver, 0);
       return normalizeSegmentResult(segmentFromExpression(resolvedArgument, resolver, 0));
     });
 
@@ -1780,27 +1744,27 @@ export function normalizeQueryKey(
     }
 
     const resolution = segments.every((seg) => seg.isStatic) ? 'static' : 'dynamic';
-    const rawSegments = segments.map((seg) => seg.text || UNRESOLVED_SEGMENT);
+    const rawSegments = segments.map(segmentTextOrUnresolved);
 
     return {
-      id: rawSegments.join('|') || 'empty',
+      id: queryKeyId(rawSegments),
       display: `[${rawSegments.join(', ')}]`,
       segments: rawSegments,
-      matchMode: options.defaultMode ?? 'prefix',
+      matchMode: defaultMatchMode(options, 'prefix'),
       resolution,
-      source: resolution === 'static' ? 'literal' : 'expression',
+      source: queryKeySource(resolution),
     };
   }
 
   const segment = normalizeSegmentResult(segmentFromExpression(resolved, resolver));
   const resolution = segment.isStatic ? 'static' : 'dynamic';
   return {
-    id: segment.text || UNRESOLVED_SEGMENT,
-    display: segment.text || UNRESOLVED_SEGMENT,
-    segments: [segment.text || UNRESOLVED_SEGMENT],
-    matchMode: options.defaultMode ?? 'exact',
+    id: segmentTextOrUnresolved(segment),
+    display: segmentTextOrUnresolved(segment),
+    segments: [segmentTextOrUnresolved(segment)],
+    matchMode: defaultMatchMode(options, 'exact'),
     resolution,
-    source: resolution === 'static' ? 'literal' : 'expression',
+    source: queryKeySource(resolution),
   };
 }
 
@@ -1817,10 +1781,7 @@ export function inferHookQueryKey(
     return normalizeQueryKey(undefined, { defaultMode: 'unknown' }, resolver);
   }
 
-  const resolved =
-    unwrapFunctionReturnExpression(unwrapExpression(first)) ??
-    resolveQueryKeyExpression(first, resolver) ??
-    unwrapExpression(first);
+  const resolved = unwrapFunctionReturnExpression(unwrapExpression(first)) ?? resolveOrUnwrapped(first, resolver, 0);
   if (t.isObjectExpression(resolved)) {
     const keyNode = findObjectPropertyValue(resolved, 'queryKey', resolver);
     return normalizeQueryKey(keyNode, { defaultMode: 'exact' }, resolver);
@@ -1839,21 +1800,17 @@ function collectQueryKeyExpressionsFromQueryOptionEntry(
   }
 
   const resolved =
-    unwrapFunctionReturnExpression(unwrapExpression(expression)) ??
-    resolveQueryKeyExpression(expression, resolver, depth + 1) ??
-    unwrapExpression(expression);
+    unwrapFunctionReturnExpression(unwrapExpression(expression)) ?? resolveOrUnwrapped(expression, resolver, depth + 1);
   if (t.isConditionalExpression(resolved)) {
     return [
       ...collectQueryKeyExpressionsFromQueryOptionEntry(resolved.consequent, resolver, depth + 1),
       ...collectQueryKeyExpressionsFromQueryOptionEntry(resolved.alternate, resolver, depth + 1),
     ];
   }
-
   if (t.isLogicalExpression(resolved)) {
     if (resolved.operator === '&&') {
       return collectQueryKeyExpressionsFromQueryOptionEntry(resolved.right, resolver, depth + 1);
     }
-
     return [
       ...collectQueryKeyExpressionsFromQueryOptionEntry(resolved.left, resolver, depth + 1),
       ...collectQueryKeyExpressionsFromQueryOptionEntry(resolved.right, resolver, depth + 1),
@@ -1875,10 +1832,8 @@ function collectQueryKeyExpressionsFromQueryOptionEntry(
   }
 
   if (t.isArrayExpression(resolved)) {
-    // `queryOptions(...)` / `infiniteQueryOptions(...)` can resolve directly to a queryKey array.
     return [resolved];
   }
-
   if (t.isCallExpression(resolved)) {
     return collectQueryKeyExpressionsFromQueryCollectionCall(resolved, resolver, depth + 1);
   }
@@ -1896,21 +1851,17 @@ function collectQueryKeyExpressionsFromQueriesCollection(
   }
 
   const resolved =
-    unwrapFunctionReturnExpression(unwrapExpression(expression)) ??
-    resolveQueryKeyExpression(expression, resolver, depth + 1) ??
-    unwrapExpression(expression);
+    unwrapFunctionReturnExpression(unwrapExpression(expression)) ?? resolveOrUnwrapped(expression, resolver, depth + 1);
   if (t.isConditionalExpression(resolved)) {
     return [
       ...collectQueryKeyExpressionsFromQueriesCollection(resolved.consequent, resolver, depth + 1),
       ...collectQueryKeyExpressionsFromQueriesCollection(resolved.alternate, resolver, depth + 1),
     ];
   }
-
   if (t.isLogicalExpression(resolved)) {
     if (resolved.operator === '&&') {
       return collectQueryKeyExpressionsFromQueriesCollection(resolved.right, resolver, depth + 1);
     }
-
     return [
       ...collectQueryKeyExpressionsFromQueriesCollection(resolved.left, resolver, depth + 1),
       ...collectQueryKeyExpressionsFromQueriesCollection(resolved.right, resolver, depth + 1),
@@ -1932,15 +1883,7 @@ function collectQueryKeyExpressionsFromQueriesCollection(
     }
 
     if (t.isSpreadElement(element)) {
-      if (!t.isExpression(element.argument)) {
-        continue;
-      }
-
       queryKeyNodes.push(...collectQueryKeyExpressionsFromQueriesCollection(element.argument, resolver, depth + 1));
-      continue;
-    }
-
-    if (!t.isExpression(element)) {
       continue;
     }
 
@@ -1959,10 +1902,9 @@ function resolveCollectionMapperResult(
     return undefined;
   }
 
-  if (t.isFunctionExpression(mapperArg) || t.isArrowFunctionExpression(mapperArg)) {
+  if (isFunctionExpressionLike(mapperArg)) {
     return extractFunctionReturnExpression(mapperArg);
   }
-
   if (!t.isIdentifier(mapperArg) && !t.isMemberExpression(mapperArg)) {
     return undefined;
   }
@@ -1971,11 +1913,9 @@ function resolveCollectionMapperResult(
   if (!resolved) {
     return undefined;
   }
-
-  if (t.isFunctionExpression(resolved) || t.isArrowFunctionExpression(resolved)) {
+  if (isFunctionExpressionLike(resolved)) {
     return extractFunctionReturnExpression(resolved);
   }
-
   return resolved;
 }
 
@@ -1987,19 +1927,15 @@ function collectQueryKeyExpressionsFromQueryCollectionCall(
   if (depth >= MAX_RESOLVE_DEPTH) {
     return [];
   }
-
   if (!t.isMemberExpression(callNode.callee) && !t.isOptionalMemberExpression(callNode.callee)) {
     return [];
   }
-
   if (callNode.callee.computed || !t.isIdentifier(callNode.callee.property)) {
     return [];
   }
 
   const method = callNode.callee.property.name;
-  const source = t.isExpression(callNode.callee.object)
-    ? collectQueryKeyExpressionsFromQueriesCollection(callNode.callee.object, resolver, depth + 1)
-    : undefined;
+  const source = collectQueryKeyExpressionsFromQueriesCollection(callNode.callee.object, resolver, depth + 1);
 
   if (method === 'map') {
     const mapperArg = firstExpressionArgument(callNode.arguments);
@@ -2007,8 +1943,7 @@ function collectQueryKeyExpressionsFromQueryCollectionCall(
     if (mapperResult) {
       return collectQueryKeyExpressionsFromQueryOptionEntry(mapperResult, resolver, depth + 1);
     }
-
-    return source ?? [];
+    return source;
   }
 
   if (method === 'flatMap') {
@@ -2017,16 +1952,14 @@ function collectQueryKeyExpressionsFromQueryCollectionCall(
     if (mapperResult) {
       return collectQueryKeyExpressionsFromQueriesCollection(mapperResult, resolver, depth + 1);
     }
-
-    return source ?? [];
+    return source;
   }
 
   if (QUERY_COLLECTION_PASSTHROUGH_METHODS.has(method)) {
-    return source ?? [];
+    return source;
   }
-
   if (method === 'concat') {
-    const combined: t.Expression[] = [...(source ?? [])];
+    const combined: t.Expression[] = [...source];
     for (const arg of callNode.arguments) {
       if (!arg || t.isSpreadElement(arg) || !t.isExpression(arg)) {
         continue;
@@ -2035,7 +1968,6 @@ function collectQueryKeyExpressionsFromQueryCollectionCall(
     }
     return combined;
   }
-
   return [];
 }
 
@@ -2066,7 +1998,6 @@ export function isOpaqueCollectionQueryKey(queryKey: NormalizedQueryKey): boolea
     if (normalized.startsWith('$')) {
       return true;
     }
-
     if (normalized.startsWith('call(') || normalized.startsWith('cond(')) {
       return true;
     }
@@ -2092,8 +2023,7 @@ export function inferHookQueryKeys(
   if (!first || !t.isExpression(first)) {
     return [normalizeQueryKey(undefined, { defaultMode: 'unknown' }, resolver)];
   }
-
-  const resolvedFirst = resolveQueryKeyExpression(first, resolver) ?? unwrapExpression(first);
+  const resolvedFirst = resolveOrUnwrapped(first, resolver, 0);
 
   let queryKeyExpressions: t.Expression[] = [];
   if (t.isObjectExpression(resolvedFirst)) {
@@ -2122,10 +2052,6 @@ export function inferHookQueryKeys(
     }
   }
 
-  if (deduped.size === 0) {
-    return [inferHookQueryKey(args, resolver)];
-  }
-
   const dedupedValues = [...deduped.values()];
   if (dedupedValues.every(isOpaqueCollectionQueryKey)) {
     return [buildPassThroughActionKey('exact')];
@@ -2143,16 +2069,13 @@ function isInlineQueryKeyObject(expression: t.Expression, depth: number): boolea
   if (!t.isObjectExpression(unwrapped)) {
     return false;
   }
-
   if (findObjectPropertyValue(unwrapped, 'queryKey', undefined)) {
     return true;
   }
-
   const queriesNode = findObjectPropertyValue(unwrapped, 'queries', undefined);
   if (queriesNode && isInlineQueryKeyCollection(queriesNode, depth + 1)) {
     return true;
   }
-
   return false;
 }
 
@@ -2222,7 +2145,6 @@ export function isHookCallDirectQueryKeyDeclaration(args: t.CallExpression['argu
     if (normalizedHookName === 'usequeries') {
       return isInlineQueryKeyCollection(unwrapped, 0);
     }
-
     return true;
   }
 
@@ -2255,7 +2177,6 @@ function queryKeyIndexFromAccessExpression(
   if (!t.isMemberExpression(object) && !t.isOptionalMemberExpression(object)) {
     return undefined;
   }
-
   if (object.computed) {
     return undefined;
   }
@@ -2272,8 +2193,7 @@ function queryKeyIndexFromAccessExpression(
   } else if (t.isStringLiteral(indexExpression)) {
     rawIndex = Number.parseInt(indexExpression.value, 10);
   } else if (t.isExpression(indexExpression)) {
-    const resolvedIndex =
-      resolveQueryKeyExpression(indexExpression, resolver, depth + 1) ?? unwrapExpression(indexExpression);
+    const resolvedIndex = resolveOrUnwrapped(indexExpression, resolver, depth + 1);
     if (t.isNumericLiteral(resolvedIndex)) {
       rawIndex = resolvedIndex.value;
     } else if (t.isStringLiteral(resolvedIndex)) {
@@ -2306,12 +2226,10 @@ function setPredicateQueryKeyConstraint(
     constraints.set(index, normalized);
     return;
   }
-
   if (existing.text === normalized.text) {
     constraints.set(index, { text: existing.text, isStatic: existing.isStatic && normalized.isStatic });
     return;
   }
-
   if (existing.text === UNRESOLVED_SEGMENT) {
     constraints.set(index, normalized);
   }
@@ -2346,23 +2264,14 @@ function collectPredicateQueryKeyConstraints(
   if (!t.isBinaryExpression(unwrapped) || (unwrapped.operator !== '===' && unwrapped.operator !== '==')) {
     return;
   }
-
-  const leftIndex = t.isExpression(unwrapped.left)
-    ? queryKeyIndexFromAccessExpression(unwrapped.left, resolver, depth + 1)
-    : undefined;
-  const rightIndex = t.isExpression(unwrapped.right)
-    ? queryKeyIndexFromAccessExpression(unwrapped.right, resolver, depth + 1)
-    : undefined;
+  const leftIndex = queryKeyIndexFromAccessExpression(unwrapped.left, resolver, depth + 1);
+  const rightIndex = queryKeyIndexFromAccessExpression(unwrapped.right, resolver, depth + 1);
   if (typeof leftIndex === 'number' && typeof rightIndex === 'number') {
     return;
   }
 
   if (typeof leftIndex === 'number') {
-    if (!t.isExpression(unwrapped.right)) {
-      return;
-    }
-    const resolvedValue =
-      resolveQueryKeyExpression(unwrapped.right, resolver, depth + 1) ?? unwrapExpression(unwrapped.right);
+    const resolvedValue = resolveOrUnwrapped(unwrapped.right, resolver, depth + 1);
     setPredicateQueryKeyConstraint(
       constraints,
       leftIndex,
@@ -2372,11 +2281,7 @@ function collectPredicateQueryKeyConstraints(
   }
 
   if (typeof rightIndex === 'number') {
-    if (!t.isExpression(unwrapped.left)) {
-      return;
-    }
-    const resolvedValue =
-      resolveQueryKeyExpression(unwrapped.left, resolver, depth + 1) ?? unwrapExpression(unwrapped.left);
+    const resolvedValue = resolveOrUnwrapped(unwrapped.left, resolver, depth + 1);
     setPredicateQueryKeyConstraint(
       constraints,
       rightIndex,
@@ -2389,7 +2294,7 @@ function inferActionQueryKeyFromPredicate(
   predicateNode: t.Expression,
   resolver: QueryKeyResolver | undefined,
 ): NormalizedQueryKey | undefined {
-  const resolvedPredicate = resolveQueryKeyExpression(predicateNode, resolver) ?? unwrapExpression(predicateNode);
+  const resolvedPredicate = resolveOrUnwrapped(predicateNode, resolver, 0);
 
   let conditionExpression: t.Expression | undefined;
   if (t.isFunctionExpression(resolvedPredicate) || t.isArrowFunctionExpression(resolvedPredicate)) {
@@ -2397,7 +2302,6 @@ function inferActionQueryKeyFromPredicate(
   } else {
     conditionExpression = resolvedPredicate;
   }
-
   if (!conditionExpression) {
     return undefined;
   }
@@ -2420,16 +2324,15 @@ function inferActionQueryKeyFromPredicate(
   if (segments.length === 0) {
     return undefined;
   }
-
-  const rawSegments = segments.map((segment) => segment.text || UNRESOLVED_SEGMENT);
+  const rawSegments = segments.map(segmentTextOrUnresolved);
   const resolution = segments.every((segment) => segment.isStatic) ? 'static' : 'dynamic';
   return {
-    id: rawSegments.join('|') || 'empty',
+    id: queryKeyId(rawSegments),
     display: `[${rawSegments.join(', ')}]`,
     segments: rawSegments,
     matchMode: 'prefix',
     resolution,
-    source: resolution === 'static' ? 'literal' : 'expression',
+    source: queryKeySource(resolution),
   };
 }
 
@@ -2452,7 +2355,7 @@ export function inferActionQueryKey(
   }
 
   if (method === 'setQueryData') {
-    const resolvedFirst = resolveQueryKeyExpression(first, resolver) ?? unwrapExpression(first);
+    const resolvedFirst = resolveOrUnwrapped(first, resolver, 0);
     const normalized = normalizeQueryKey(resolvedFirst, { defaultMode: 'exact' }, resolver);
     const unresolvedPassThroughReference =
       isPassThroughQueryKeyReference(first) &&
@@ -2493,34 +2396,72 @@ export function inferActionQueryKey(
       wildcardIfMissing: true,
     });
   }
-
-  const resolved = resolveQueryKeyExpression(first, resolver) ?? unwrapExpression(first);
+  const resolved = resolveOrUnwrapped(first, resolver, 0);
   if (!t.isObjectExpression(resolved)) {
     return normalizeActionKeyOrWildcard(resolved, { defaultMode: 'prefix' }, resolver);
   }
-
   const keyNode = findObjectPropertyValue(resolved, 'queryKey', resolver);
   const exact = readBooleanProperty(resolved, 'exact');
-  const mode: MatchMode = exact === true ? 'exact' : 'prefix';
-
+  const mode = actionModeFromExact(exact);
   if (keyNode) {
     return normalizeActionKeyOrWildcard(keyNode, { defaultMode: mode }, resolver);
   }
-
   const predicateNode = findObjectPropertyValue(resolved, 'predicate', resolver);
   if (predicateNode) {
     const inferredFromPredicate = inferActionQueryKeyFromPredicate(predicateNode, resolver);
     if (inferredFromPredicate) {
       return {
         ...inferredFromPredicate,
-        matchMode: exact === true ? 'exact' : inferredFromPredicate.matchMode,
+        matchMode: predicateMatchMode(exact, inferredFromPredicate.matchMode),
       };
     }
   }
-
   const hasPredicate = !!predicateNode;
   return normalizeQueryKey(undefined, {
-    defaultMode: hasPredicate ? 'predicate' : 'all',
+    defaultMode: missingActionMode(hasPredicate),
     wildcardIfMissing: true,
   });
 }
+
+export const __queryKeyTestInternals = {
+  applyCallArgumentHints,
+  actionModeFromExact,
+  applyFunctionArgumentHints,
+  applyObjectArgumentIdentifierHints,
+  applyPositionalArgumentHints,
+  callArgumentsSegment,
+  collectObjectArgumentSubstitutions,
+  collectPredicateQueryKeyConstraints,
+  collectQueryKeyExpressionsFromQueriesCollection,
+  collectQueryKeyExpressionsFromQueryCollectionCall,
+  collectQueryKeyExpressionsFromQueryOptionEntry,
+  expressionContainsIdentifier,
+  functionParameterNames,
+  inferActionQueryKeyFromPredicate,
+  isEmptyFallbackExpression,
+  isInlineQueryKeyCollection,
+  isInlineQueryKeyObject,
+  isFunctionExpressionLike,
+  isPassThroughQueryInstanceReference,
+  isPassThroughQueryKeyReference,
+  isQueryCacheLookupCall,
+  isDisplayableResolvedSegment,
+  normalizeActionKeyOrWildcard,
+  defaultMatchMode,
+  missingActionMode,
+  predicateMatchMode,
+  propertyNameFromExpression,
+  propertySegmentText,
+  queryKeyId,
+  queryKeySource,
+  queryKeyIndexFromAccessExpression,
+  resolveActionOptionsObject,
+  resolveCollectionMapperResult,
+  resolveObjectPropertyExpression,
+  segmentsFromArrayElement,
+  setPredicateQueryKeyConstraint,
+  shouldTreatAsWildcardActionKey,
+  simplifyCollectionMethodCallSegment,
+  segmentTextOrUnresolved,
+  substituteIdentifierInExpression,
+};

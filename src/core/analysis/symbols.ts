@@ -229,10 +229,7 @@ function collectExportedDeclarationSymbols(
       if (!t.isIdentifier(declarator.id) || !declarator.init) {
         continue;
       }
-
-      const value = t.isExpression(declarator.init)
-        ? unwrapExpression(declarator.init)
-        : (declarator.init as unknown as t.Expression);
+      const value = unwrapExpression(declarator.init);
       table.values.set(declarator.id.name, value);
 
       if (t.isFunctionExpression(value) || t.isArrowFunctionExpression(value)) {
@@ -347,7 +344,6 @@ function collectPatternBindings(target: t.Node, init: t.Expression, table: FileS
         collectPatternBindings(property.argument, init, table);
         continue;
       }
-
       if (!t.isObjectProperty(property)) {
         continue;
       }
@@ -377,7 +373,6 @@ function collectPatternBindings(target: t.Node, init: t.Expression, table: FileS
     }
     return;
   }
-
   if (t.isArrayPattern(target)) {
     for (let index = 0; index < target.elements.length; index += 1) {
       const element = target.elements[index];
@@ -390,7 +385,6 @@ function collectPatternBindings(target: t.Node, init: t.Expression, table: FileS
         collectPatternBindings(element.argument, nextInit as t.Expression, table);
         continue;
       }
-
       if (
         t.isIdentifier(element) ||
         t.isAssignmentPattern(element) ||
@@ -409,13 +403,11 @@ function collectLocalVariableSymbol(pathNode: NodePath<t.VariableDeclarator>, ta
     if (!init || !t.isExpression(init)) {
       return;
     }
-
     if (t.isObjectPattern(id) || t.isArrayPattern(id)) {
       collectPatternBindings(id, unwrapExpression(init), table);
     }
     return;
   }
-
   const value = t.isExpression(init) ? unwrapExpression(init) : (init as unknown as t.Expression);
   table.values.set(id.name, value);
 
@@ -444,7 +436,6 @@ function collectAssignedIdentifiers(target: t.Node, names: Set<string>): void {
         collectAssignedIdentifiers(property.argument, names);
         continue;
       }
-
       if (t.isObjectProperty(property)) {
         collectAssignedIdentifiers(property.value as t.LVal, names);
       }
@@ -462,7 +453,6 @@ function collectAssignedIdentifiers(target: t.Node, names: Set<string>): void {
         collectAssignedIdentifiers(element.argument, names);
         continue;
       }
-
       if (t.isLVal(element)) {
         collectAssignedIdentifiers(element, names);
       }
@@ -494,7 +484,6 @@ function isTopLevelVariableDeclarator(pathNode: NodePath<t.VariableDeclarator>):
   if (!statementPath) {
     return false;
   }
-
   if (statementPath.isProgram()) {
     return true;
   }
@@ -514,7 +503,6 @@ function isTopLevelFunctionDeclaration(pathNode: NodePath<t.FunctionDeclaration>
   if (!parentPath) {
     return false;
   }
-
   if (parentPath.isProgram()) {
     return true;
   }
@@ -632,7 +620,6 @@ export function buildFileSymbols(filePath: string, ast: t.File): FileSymbols {
           });
           continue;
         }
-
         if (t.isImportNamespaceSpecifier(specifier)) {
           const namespaceSpecifier = specifier as t.ImportNamespaceSpecifier;
           table.imports.set(namespaceSpecifier.local.name, {

@@ -223,12 +223,10 @@ export function GraphCanvas({ payload }: { payload: WebviewPayload }) {
             if (cancelled) {
               return;
             }
-
             const minY = minimumNodeY(layoutedWithDividers);
             if (minY === null) {
               return;
             }
-
             const viewport = reactFlow.getViewport();
             const alignedY = 28 - minY * viewport.zoom;
             reactFlow
@@ -291,9 +289,12 @@ export function GraphCanvas({ payload }: { payload: WebviewPayload }) {
 
     let currentlySelected: string | null = null;
     if (selectedNode?.kind === 'queryKey' && selectedNode.label === queryKeyLabel) {
-      currentlySelected = candidateQueryNodes.some((candidate) => candidate.id === selectedNode.id)
-        ? selectedNode.id
-        : null;
+      for (const candidate of candidateQueryNodes) {
+        if (candidate.id === selectedNode.id) {
+          currentlySelected = selectedNode.id;
+          break;
+        }
+      }
     }
 
     if (currentlySelected) {
@@ -326,7 +327,6 @@ export function GraphCanvas({ payload }: { payload: WebviewPayload }) {
 
       return a.id.localeCompare(b.id);
     });
-
     if (!targetNode) {
       return;
     }

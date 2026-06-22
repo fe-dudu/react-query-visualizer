@@ -137,8 +137,6 @@ export function actionAffectsDeclaredQueryKey(
   actionQueryKey: QueryRecord['queryKey'],
   declaredQueryKey: QueryRecord['queryKey'],
 ): boolean {
-  // `invalidateQueries({ queryKey })` pass-through cannot be safely expanded.
-  // Keep it as its own dynamic key node instead of matching every declared key.
   if (actionQueryKey.id === 'pass-through-query-key') {
     return false;
   }

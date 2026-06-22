@@ -22,19 +22,17 @@ class ActivityNode extends vscode.TreeItem {
       id?: string;
       description?: string;
       tooltip?: string;
-      icon?: string;
+      icon: string;
       command?: vscode.Command;
       collapsibleState?: vscode.TreeItemCollapsibleState;
       children?: ActivityNode[];
-    } = {},
+    },
   ) {
     super(label, options.collapsibleState ?? vscode.TreeItemCollapsibleState.None);
     this.id = options.id;
     this.description = options.description;
     this.tooltip = options.tooltip;
-    if (options.icon) {
-      this.iconPath = new vscode.ThemeIcon(options.icon);
-    }
+    this.iconPath = new vscode.ThemeIcon(options.icon);
     if (options.command) {
       this.command = options.command;
     }
@@ -87,7 +85,7 @@ function buildRelatedFilesTree(
 
   for (const file of files) {
     const segments = normalizePathSegments(file.projectRelativePath);
-    const impact = Number(file.impact ?? 0);
+    const impact = Number(file.impact);
 
     let projectNode = root.directories.get(file.project);
     if (!projectNode) {
@@ -109,10 +107,6 @@ function buildRelatedFilesTree(
     let current = projectNode;
     for (let index = 0; index < segments.length - 1; index += 1) {
       const segment = segments[index];
-      if (!segment) {
-        continue;
-      }
-
       const segmentPath = `${file.project}/${segments.slice(0, index + 1).join('/')}`;
       const existing = current.directories.get(segment);
       if (existing) {
@@ -131,8 +125,7 @@ function buildRelatedFilesTree(
       current.directories.set(segment, nextDirectory);
       current = nextDirectory;
     }
-
-    const fileName = segments[segments.length - 1] ?? file.labelPath;
+    const fileName = segments[segments.length - 1];
     current.files.push({
       name: fileName,
       labelPath: file.labelPath,
