@@ -7,6 +7,8 @@ Useful for searches like React Query visualizer, TanStack Query debugger, React 
 [![VS Marketplace](https://img.shields.io/vscode-marketplace/v/fe-dudu.react-query-visualizer?label=VS%20Marketplace)](https://marketplace.visualstudio.com/items?itemName=fe-dudu.react-query-visualizer)
 [![Open VSX](https://img.shields.io/open-vsx/v/fe-dudu/react-query-visualizer)](https://open-vsx.org/extension/fe-dudu/react-query-visualizer)
 [![Codecov](https://codecov.io/gh/fe-dudu/react-query-visualizer/graph/badge.svg?token=4RKVFTPP41)](https://codecov.io/gh/fe-dudu/react-query-visualizer)
+[![TanStack Community Resource](https://img.shields.io/badge/TanStack-Community%20Resource-334155?logo=reactquery&logoColor=white)](https://tanstack.com/query/latest/docs/community-resources)
+
 ![React Query Visualizer screenshot](https://raw.githubusercontent.com/fe-dudu/react-query-visualizer/main/media/screenshot.png)
 
 ## Open Source
